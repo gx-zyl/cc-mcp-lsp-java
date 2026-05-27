@@ -73,3 +73,38 @@ cc-mcp-lsp-java/
 2. 在调试窗口中打开 `D:\project\cc-github-repo\git\AIProject`
 3. 等待 JDT.LS (redhat.java) 索引完成
 4. 在侧边栏面板或通过 MCP Client 调用 `searchJavaTypes` / `getSourceCodeByFQN`
+
+## 发布到 VS Code Marketplace
+
+### 流程
+
+```pwsh
+# 1. 构建
+npm run build
+
+# 2. 打包 .vsix
+npx @vscode/vsce package
+```
+
+### 方式 A：网页上传（推荐）
+
+1. 打开 https://marketplace.visualstudio.com/manage/publishers/gx-zyl
+2. 点右上角 **...** → **Upload Extension**
+3. 选生成的 `.vsix` 文件
+
+### 方式 B：CLI 发布
+
+```pwsh
+# 1. 查看 Azure DevOps 账号名
+#    打开 https://dev.azure.com → 登录 → 浏览器地址栏显示的即是账号名（如 mozhuanzuojing2020）
+
+# 2. 生成 PAT
+#    打开 https://dev.azure.com/<账号名>/_usersSettings/tokens
+#    + New Token → Organization: "All accessible organizations" → Scope: "Marketplace (Acquire)"
+
+# 3. 发布
+npx @vscode/vsce publish --pat <粘贴PAT>
+```
+
+> 上传前确保 `package.json` 中 `publisher` 字段与 Marketplace 注册的 publisher ID 一致（当前：`gx-zyl`）。
+> 大于 100MB 的 vsix 会触发警告，当前约 42MB 在限制内。
