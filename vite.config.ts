@@ -9,6 +9,7 @@ const entries: Record<string, string> = {
   doc: resolve(__dirname, 'src/webview/doc/index.html'),
   result: resolve(__dirname, 'src/webview/result/index.html'),
   callgraph: resolve(__dirname, 'src/webview/callgraph/index.html'),
+  'callgraph-doc': resolve(__dirname, 'src/webview/callgraph-doc/index.html'),
 }
 
 export default defineConfig({

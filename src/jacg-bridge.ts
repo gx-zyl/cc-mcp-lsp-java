@@ -17,15 +17,37 @@ const DEFAULT_DB_DIR = '.cc-mcp-lsp-java/jacg';
 
 let sidecarProcess: cp.ChildProcess | null = null;
 let sidecarPort = DEFAULT_PORT;
+let _activeProjectIndex = 0; // multi-root 支持
 
 /* ───────── 项目隔离：基于 workspace 路径哈希 ───────── */
 
 /**
- * 根据当前 VS Code 工作区路径生成稳定的项目 ID（SHA256 前 16 位）。
+ * 获取所有工作区文件夹。
+ */
+export function getAvailableProjects(): { name: string; index: number }[] {
+  return (vscode.workspace.workspaceFolders || []).map((f, i) => ({ name: f.name, index: i }));
+}
+
+/**
+ * 设置当前活跃项目索引（multi-root 切换）。
+ */
+export function setActiveProject(index: number): void {
+  _activeProjectIndex = Math.max(0, Math.min(index, (vscode.workspace.workspaceFolders?.length || 1) - 1));
+}
+
+/**
+ * 获取当前活跃项目的根路径。
+ */
+function getActiveProjectRoot(): string | undefined {
+  return vscode.workspace.workspaceFolders?.[_activeProjectIndex]?.uri?.fsPath;
+}
+
+/**
+ * 根据当前活跃工作区路径生成稳定的项目 ID（SHA256 前 16 位）。
  * 每个项目有独立的 H2 数据库目录，避免数据混合。
  */
 export function getProjectId(): string | undefined {
-  const ws = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
+  const ws = getActiveProjectRoot();
   if (!ws) return undefined;
   return crypto.createHash('sha256').update(ws).digest('hex').slice(0, 16);
 }
@@ -63,8 +85,10 @@ export async function discoverProjectClasspath(
     return null;
   }
 
-  // 用工作区根目录下的第一个 .java 文件推断项目
-  const rootUri = workspaceFolders[0].uri;
+  // 用当前活跃项目根目录推断
+  const root = getActiveProjectRoot();
+  if (!root) { log('[jacg] No active project root'); return null; }
+  const rootUri = vscode.Uri.file(root);
   const result = { compileOutput: new Set<string>(), dependencyJars: new Set<string>() };
 
   // 策略 A：直接搜 target/classes + target/dependency 等已知输出目录
@@ -344,9 +368,35 @@ export async function findPath(keyword: string): Promise<string[]> {
   return result.paths || [];
 }
 
-export async function getStatus(): Promise<{ scanned: boolean; dbDir: string; projectId: string }> {
-  const result = await post('/status') as { scanned: boolean; baseDbDir: string; projectId?: string };
-  return { scanned: result.scanned, dbDir: result.baseDbDir, projectId: result.projectId || '' };
+export async function getStatus(): Promise<{
+  scanned: boolean;
+  dbDir: string;
+  projectId: string;
+  inputDirs: string[];
+  dbFileSize: number;
+}> {
+  const result = await post('/status') as {
+    scanned: boolean;
+    baseDbDir: string;
+    projectId?: string;
+    inputDirs?: string[];
+  };
+  const pid = result.projectId || '';
+  // 从文件系统获取 H2 数据库文件大小
+  let dbFileSize = 0;
+  if (pid) {
+    try {
+      const dbFile = path.join(result.baseDbDir, `${pid}.mv.db`);
+      dbFileSize = fs.statSync(dbFile).size;
+    } catch { /* 文件还不存在 */ }
+  }
+  return {
+    scanned: result.scanned,
+    dbDir: result.baseDbDir,
+    projectId: pid,
+    inputDirs: result.inputDirs || [],
+    dbFileSize,
+  };
 }
 
 /* ───────── 缓存清理 ───────── */

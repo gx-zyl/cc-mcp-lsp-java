@@ -16,7 +16,7 @@ import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getServerInfo, onDidChangeStatus, startMcpServer, stopMcpServer } from './server.js';
-import { isSidecarRunning, getStatus, getCallers, getCallees, scan as jacgScan, cleanProjectCache, discoverProjectClasspath } from './jacg-bridge.js';
+import { isSidecarRunning, getStatus, getCallers, getCallees, listMethods, scan as jacgScan, cleanProjectCache, discoverProjectClasspath, getAvailableProjects, setActiveProject } from './jacg-bridge.js';
 
 /* ───────── 共享状态 ───────── */
 
@@ -242,6 +242,58 @@ function getDocBtnHtml(): string {
 </html>`;
 }
 
+/* ───────── 调用图 MCP 接口说明 ───────── */
+
+export function registerCallGraphDocView(context: vscode.ExtensionContext) {
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider('ccMcpLspJavaCallGraphDoc', new CallGraphDocProvider(), {
+      webviewOptions: { retainContextWhenHidden: true },
+    })
+  );
+}
+
+let callGraphDocPanel: vscode.WebviewPanel | undefined;
+
+export function openCallGraphDocPanel(context: vscode.ExtensionContext) {
+  if (callGraphDocPanel) { callGraphDocPanel.reveal(vscode.ViewColumn.Beside); return; }
+  callGraphDocPanel = vscode.window.createWebviewPanel(
+    'ccMcpLspJavaCallGraphDocPanel', 'CC MCP LSP Java — 调用图 MCP 接口说明',
+    { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+    { enableScripts: true, retainContextWhenHidden: true }
+  );
+  callGraphDocPanel.webview.html = resolveWebviewHtml(callGraphDocPanel.webview, context, 'callgraph-doc');
+  callGraphDocPanel.onDidDispose(() => { callGraphDocPanel = undefined; });
+}
+
+class CallGraphDocProvider implements vscode.WebviewViewProvider {
+  resolveWebviewView(webviewView: vscode.WebviewView) {
+    webviewView.webview.options = { enableScripts: true, localResourceRoots: [] };
+    webviewView.webview.html = getCallGraphDocBtnHtml();
+    webviewView.webview.onDidReceiveMessage(async (msg) => {
+      if (msg.type === 'openCallGraphDoc') openCallGraphDocPanel(_context);
+    });
+  }
+}
+
+function getCallGraphDocBtnHtml(): string {
+  return /* html */`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1e1e1e; padding: 10px; margin: 0; }
+  .btn { width: 100%; padding: 8px 0; text-align: center; font-size: 12px; border: 1px solid #3c3c3c; border-radius: 4px; background: #2d2d2d; color: #cccccc; cursor: pointer; transition: background 0.15s; }
+  .btn:hover { background: #353535; }
+</style>
+</head>
+<body>
+<button class="btn" id="btnOpenDoc">打开调用图 MCP 接口说明</button>
+<script>(function(){const api=acquireVsCodeApi();document.getElementById('btnOpenDoc').addEventListener('click',()=>{api.postMessage({type:'openCallGraphDoc'})})})();</script>
+</body>
+</html>`;
+}
+
 /* ───────── Java 查询测试视图 ───────── */
 
 interface SearchResultItem {
@@ -447,6 +499,8 @@ class CallGraphProvider implements vscode.WebviewViewProvider {
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
     webviewView.webview.html = resolveWebviewHtml(webviewView.webview, this.context, 'callgraph');
+    // 告知 webview 它处于侧边栏模式
+    webviewView.webview.postMessage({ type: 'panelConfig', isSidebar: true });
 
     webviewView.webview.onDidReceiveMessage(async (msg) => {
       switch (msg.type) {
@@ -455,10 +509,20 @@ class CallGraphProvider implements vscode.WebviewViewProvider {
           break;
         case 'startSidecarScan':
           postSidecarStatus(webviewView.webview);
-          handleSidecarScan(webviewView.webview, this.log);
+          handleSidecarScan(webviewView.webview, this.log).catch((err) => {
+            this.log(`Sidecar scan error: ${err}`);
+            postSidecarStatus(webviewView.webview);
+          });
           break;
         case 'cleanSidecarCache':
           handleSidecarClean(webviewView.webview);
+          break;
+        case 'openInEditor':
+          openCallGraphPanel(this.context, this.log);
+          break;
+        case 'switchProject':
+          setActiveProject(msg.index as number);
+          postSidecarStatus(webviewView.webview);
           break;
         case 'sidecarQuery': {
           const queryType = msg.queryType as string;
@@ -466,10 +530,16 @@ class CallGraphProvider implements vscode.WebviewViewProvider {
           const parts = query.split(':');
           const className = parts[0] || '';
           const methodName = parts[1] || '';
-                    try {
-            const data = queryType === 'callers'
-              ? await getCallers({ className, methodName })
-              : await getCallees({ className, methodName });
+          try {
+            let data: { method: string; related: string[] }[];
+            if (queryType === 'list') {
+              const methods = await listMethods({ className, methodName });
+              data = methods.map(m => ({ method: m, related: [] }));
+            } else if (queryType === 'callers') {
+              data = await getCallers({ className, methodName });
+            } else {
+              data = await getCallees({ className, methodName });
+            }
             webviewView.webview.postMessage({ type: 'queryResult', queryType, data });
           } catch (err) {
             this.log(`Query error: ${err}`);
@@ -494,6 +564,8 @@ export function openCallGraphPanel(context: vscode.ExtensionContext, log: (msg: 
     { enableScripts: true, retainContextWhenHidden: true }
   );
   callGraphPanel.webview.html = resolveWebviewHtml(callGraphPanel.webview, context, 'callgraph');
+  // 告知 webview 它处于编辑器面板模式
+  callGraphPanel.webview.postMessage({ type: 'panelConfig', isSidebar: false });
 
   const disposable = callGraphPanel.webview.onDidReceiveMessage(async (msg) => {
     switch (msg.type) {
@@ -503,16 +575,26 @@ export function openCallGraphPanel(context: vscode.ExtensionContext, log: (msg: 
         await handleSidecarScan(callGraphPanel?.webview, log);
         break;
       case 'cleanSidecarCache': await handleSidecarClean(callGraphPanel?.webview, log); break;
+      case 'switchProject':
+        setActiveProject(msg.index as number);
+        postSidecarStatus(callGraphPanel?.webview);
+        break;
       case 'sidecarQuery': {
         const queryType = msg.queryType as string;
         const query = msg.query as string;
         const parts = query.split(':');
         const className = parts[0] || '';
         const methodName = parts[1] || '';
-                try {
-          const data = queryType === 'callers'
-            ? await getCallers({ className, methodName })
-            : await getCallees({ className, methodName });
+        try {
+          let data: { method: string; related: string[] }[];
+          if (queryType === 'list') {
+            const methods = await listMethods({ className, methodName });
+            data = methods.map(m => ({ method: m, related: [] }));
+          } else if (queryType === 'callers') {
+            data = await getCallers({ className, methodName });
+          } else {
+            data = await getCallees({ className, methodName });
+          }
           callGraphPanel?.webview.postMessage({ type: 'queryResult', queryType, data });
         } catch (err) {
           log(`Query error: ${err}`);
@@ -535,7 +617,7 @@ async function handleSidecarScan(webview: vscode.Webview | undefined, log?: (msg
     try { webview.postMessage({ type: 'sidecarProgress', message: msg }); } catch { /* webview disposed */ }
   };
   const cp = await discoverProjectClasspath(logger);
-  if (!cp) { vscode.window.showErrorMessage('无法自动发现 Classpath'); return; }
+  if (!cp) { vscode.window.showErrorMessage('无法自动发现 Classpath'); postSidecarStatus(webview); return; }
   const dirs = [...cp.compileOutput, ...cp.dependencyJars];
   const ok = await jacgScan(dirs, logger);
   if (ok) { vscode.window.showInformationMessage('调用图扫描完成'); }
@@ -553,17 +635,28 @@ async function handleSidecarClean(webview: vscode.Webview | undefined) {
 
 /* ───────── 侧车状态推送 ───────── */
 
+const SIDECAR_STATUS_DEFAULT = { running: false, scanned: false, dbDir: '', projectId: '', inputDirs: [], dbFileSize: 0, classpathCount: 0, projects: [] };
+
 async function postSidecarStatus(webview: vscode.Webview | undefined) {
   if (!webview) return;
   try {
     const running = isSidecarRunning();
     if (running) {
       const s = await getStatus();
-      webview.postMessage({ type: 'sidecarStatus', data: { running: true, scanned: s.scanned, dbDir: s.dbDir, projectId: s.projectId } });
+      webview.postMessage({ type: 'sidecarStatus', data: {
+        running: true,
+        scanned: s.scanned,
+        dbDir: s.dbDir,
+        projectId: s.projectId,
+        inputDirs: s.inputDirs,
+        dbFileSize: s.dbFileSize,
+        classpathCount: s.inputDirs.length,
+        projects: getAvailableProjects(),
+      }});
     } else {
-      webview.postMessage({ type: 'sidecarStatus', data: { running: false, scanned: false, dbDir: '', projectId: '' } });
+      webview.postMessage({ type: 'sidecarStatus', data: SIDECAR_STATUS_DEFAULT });
     }
   } catch {
-    webview.postMessage({ type: 'sidecarStatus', data: { running: false, scanned: false, dbDir: '', projectId: '' } });
+    webview.postMessage({ type: 'sidecarStatus', data: SIDECAR_STATUS_DEFAULT });
   }
 }

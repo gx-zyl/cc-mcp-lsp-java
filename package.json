@@ -30,6 +30,7 @@
     "onView:ccMcpLspJavaDoc",
     "onView:ccMcpLspJavaTest",
     "onView:ccMcpLspJavaCallGraph",
+    "onView:ccMcpLspJavaCallGraphDoc",
     "onCommand:cc-mcp-lsp-java.openManagement",
     "onCommand:cc-mcp-lsp-java.openCallGraph"
   ],
@@ -65,6 +66,11 @@
           "type": "webview",
           "id": "ccMcpLspJavaCallGraph",
           "name": "调用图分析"
+        },
+        {
+          "type": "webview",
+          "id": "ccMcpLspJavaCallGraphDoc",
+          "name": "调用图 MCP 接口说明"
         }
       ]
     },
@@ -76,6 +82,10 @@
       {
         "command": "cc-mcp-lsp-java.openCallGraph",
         "title": "CC MCP LSP Java: 打开调用图分析"
+      },
+      {
+        "command": "cc-mcp-lsp-java.openCallGraphDoc",
+        "title": "CC MCP LSP Java: 打开调用图 MCP 接口说明"
       }
     ],
     "configuration": {

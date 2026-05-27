@@ -8,7 +8,7 @@
 
 import * as vscode from 'vscode';
 import { startMcpServer, stopMcpServer } from './server.js';
-import { registerManagementView, registerDocView, registerTestView, registerCallGraphView, openManagementPanel, openCallGraphPanel } from './panel.js';
+import { registerManagementView, registerDocView, registerTestView, registerCallGraphView, registerCallGraphDocView, openManagementPanel, openCallGraphPanel, openCallGraphDocPanel } from './panel.js';
 import { startSidecar, stopSidecar, isSidecarRunning, getStatus, cleanProjectCache, discoverProjectClasspath, scan as jacgScan } from './jacg-bridge.js';
 
 const LOG_TAG = '[cc-mcp-lsp-java]';
@@ -43,6 +43,7 @@ export function activate(context: vscode.ExtensionContext) {
   registerDocView(context);
   registerTestView(context, log);
   registerCallGraphView(context, log);
+  registerCallGraphDocView(context);
 
   // 注册编辑器标签页命令
   context.subscriptions.push(
@@ -54,6 +55,12 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('cc-mcp-lsp-java.openCallGraph', () => {
       openCallGraphPanel(context, log);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('cc-mcp-lsp-java.openCallGraphDoc', () => {
+      openCallGraphDocPanel(context);
     })
   );
 
