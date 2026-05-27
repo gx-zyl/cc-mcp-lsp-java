@@ -84,22 +84,31 @@
     }
   },
   "scripts": {
-    "build": "tsup",
+    "build:webview": "vite build",
+    "build": "npm run build:webview && tsup",
     "watch": "tsup --watch",
+    "watch:webview": "vite build --watch",
     "package": "vsce package",
     "compile": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
     "@types/vscode": "^1.120.0",
     "tsup": "^8.5.1",
-    "typescript": "^6.0.3"
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "vite": "^6.4.2",
     "zod": "^4.4.3"
   },
   "files": [
-    "dist"
+    "dist",
+    "dist-webview"
   ]
 }

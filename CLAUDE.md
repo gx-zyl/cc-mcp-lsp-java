@@ -12,9 +12,26 @@
 ## 构建
 
 ```bash
-npm run build
-npm run watch
+npm run build          # vite build + tsup（先构建 webview，再构建扩展）
+npm run watch          # tsup --watch（扩展端热更）
+npm run watch:webview  # vite build --watch（webview 端热更）
 ```
+
+### 构建架构
+
+- **扩展端**：`src/*.ts` → tsup → `dist/extension.js`
+- **Webview 端**：`src/webview/*` → Vite + React 19 → `dist-webview/`
+  - 4 个独立入口：management / test / doc / result
+  - 出口为自包含 HTML（`dist-webview/<name>/index.html`），asset 路径由扩展运行时自动转换
+- 面板通过 `panel.ts` 中 `resolveWebviewHtml()` 读取并注入 webview
+
+### Webview 开发注意事项
+
+- 所有面板 UI 用 React + TSX，`src/webview/` 下每个子目录一个独立应用
+- 新建视图时需：创建入口目录（`index.html` + `main.tsx` + `App.tsx`）、在 `vite.config.ts` 添加入口
+- 扩展端与 webview 通信：统一 `postMessage` 协议 `{ type: string, ... }`
+- 共享模块位于 `src/webview/shared/`：`hooks.ts`（useVscodeListener, postMessage）、`types.ts`、`vscode-api.ts`
+- CSS 目前合并输出，类名注意避免跨视图冲突
 
 ## 本地测试
 

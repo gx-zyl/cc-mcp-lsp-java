@@ -9,6 +9,10 @@
 - **连接/重启追踪**：会话建立/关闭时间记录，重启历史日志
 - **GitHub skills**：从 cc-kit 导入 github-repo、git-workflow
 - **注释保护**已落地
+- **全量 Webview React 19 迁移**：所有面板从内联 HTML 模板迁移至 React 19 + TypeScript + Vite 构建
+  - `src/webview/` 下 4 个独立 React 应用 + 共享模块
+  - 构建分离：tsup (扩展) + Vite (webview)，输出 `dist/` + `dist-webview/`
+  - 数据传递改为 postMessage 事件驱动，asset 路径自动通过 `webview.asWebviewUri()` 解析
 
 ## 待办
 
