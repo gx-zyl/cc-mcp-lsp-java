@@ -218,6 +218,454 @@ function getDocBtnHtml(): string {
 </html>`;
 }
 
+/* ───────── Java 查询测试视图 ───────── */
+
+export function registerTestView(context: vscode.ExtensionContext, log: (msg: string) => void) {
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider('ccMcpLspJavaTest', new TestProvider(context, log), {
+      webviewOptions: { retainContextWhenHidden: true },
+    })
+  );
+}
+
+const KIND_LABEL: Record<number, string> = {
+  [vscode.SymbolKind.Class]: 'Class',
+  [vscode.SymbolKind.Interface]: 'Interface',
+  [vscode.SymbolKind.Enum]: 'Enum',
+};
+
+interface SearchResultItem {
+  kind: string;
+  fqn: string;
+  source: 'src' | 'JAR';
+  location: string;
+  line: number;
+  uri: string;
+}
+
+let resultCounter = 0;
+
+function openResultPanel(title: string, html: string) {
+  resultCounter++;
+  const panel = vscode.window.createWebviewPanel(
+    `ccMcpLspJavaResult${resultCounter}`,
+    title,
+    { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] }
+  );
+  panel.webview.html = html;
+  panel.webview.onDidReceiveMessage((msg) => {
+    if (msg.type === 'openFile') {
+      const uri = vscode.Uri.parse(msg.uri);
+      vscode.window.showTextDocument(uri, { selection: new vscode.Range(msg.line - 1, 0, msg.line - 1, 0) });
+    }
+  });
+  return panel;
+}
+
+class TestProvider implements vscode.WebviewViewProvider {
+  constructor(private context: vscode.ExtensionContext, private log: (msg: string) => void) {}
+
+  resolveWebviewView(webviewView: vscode.WebviewView) {
+    webviewView.webview.options = { enableScripts: true, localResourceRoots: [] };
+    webviewView.webview.html = getTestHtml();
+
+    webviewView.webview.onDidReceiveMessage(async (msg) => {
+      switch (msg.type) {
+        case 'search': {
+          const query = msg.fuzzy ? `*${msg.name}*` : msg.name;
+          try {
+            const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
+              'vscode.executeWorkspaceSymbolProvider', query
+            );
+            if (!symbols || symbols.length === 0) {
+              vscode.window.showInformationMessage(`未找到匹配 "${msg.name}" 的类型`);
+              return;
+            }
+            const typeKinds = new Set([vscode.SymbolKind.Class, vscode.SymbolKind.Interface, vscode.SymbolKind.Enum]);
+            const items: SearchResultItem[] = [];
+            for (const sym of symbols) {
+              if (!typeKinds.has(sym.kind)) continue;
+              items.push({
+                kind: KIND_LABEL[sym.kind] || `Kind(${sym.kind})`,
+                fqn: sym.containerName ? `${sym.containerName}.${sym.name}` : sym.name,
+                source: sym.location.uri.scheme === 'file' ? 'src' : 'JAR',
+                location: sym.location.uri.fsPath || sym.location.uri.toString(),
+                line: sym.location.range.start.line + 1,
+                uri: sym.location.uri.toString(),
+              });
+            }
+            if (items.length === 0) {
+              vscode.window.showInformationMessage(`找到 ${symbols.length} 个符号，但没有 Java 类型`);
+              return;
+            }
+            const panel = openResultPanel(`类型搜索: ${msg.name}`, getSearchResultHtml(msg.name, items, query));
+            panel.onDidDispose(() => { /* cleanup */ });
+          } catch (err) {
+            this.log(`Search error: ${err}`);
+            vscode.window.showErrorMessage(`搜索失败: ${err}`);
+          }
+          break;
+        }
+        case 'getSource': {
+          try {
+            const parts = msg.fqn.split('.');
+            const simpleName = parts.pop()!;
+            const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
+              'vscode.executeWorkspaceSymbolProvider', simpleName
+            );
+            if (!symbols || symbols.length === 0) {
+              vscode.window.showInformationMessage(`未找到 "${msg.fqn}"`);
+              return;
+            }
+            const match = symbols.find(s => s.name === simpleName && s.containerName === parts.join('.'))
+              || symbols.find(s => s.name === simpleName);
+            if (!match) {
+              vscode.window.showInformationMessage(`未精确匹配 "${msg.fqn}"`);
+              return;
+            }
+            if (match.location.uri.scheme !== 'file') {
+              vscode.window.showInformationMessage(`"${msg.fqn}" 来自 JAR 依赖，无法获取完整源码`);
+              return;
+            }
+            const doc = await vscode.workspace.openTextDocument(match.location.uri);
+            const source = doc.getText();
+            openResultPanel(`源码: ${msg.fqn}`, getSourceResultHtml(msg.fqn, match.location.uri.fsPath, source));
+          } catch (err) {
+            this.log(`getSource error: ${err}`);
+            vscode.window.showErrorMessage(`获取源码失败: ${err}`);
+          }
+          break;
+        }
+      }
+    });
+  }
+}
+
+function getSearchResultHtml(query: string, items: SearchResultItem[], rawQuery: string): string {
+  const totalSrc = items.filter(i => i.source === 'src').length;
+  const totalJar = items.filter(i => i.source === 'JAR').length;
+  const kinds = [...new Set(items.map(i => i.kind))].sort();
+
+  const rows = items.map((item, idx) => JSON.stringify(item)).join('|||');
+
+  return /* html */`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  :root {
+    --bg: #1e1e1e; --card: #2d2d2d; --card-hover: #353535;
+    --border: #3c3c3c; --text: #cccccc; --text-dim: #888888;
+    --green: #4ec9b0; --blue: #569cd6; --orange: #ce9178; --yellow: #dcdcaa;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text); padding: 20px 24px;
+    font-size: 13px; line-height: 1.6;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+  .summary { color: var(--text-dim); font-size: 13px; margin-bottom: 16px; }
+  .summary strong { color: var(--text); }
+
+  /* ── Filters ── */
+  .filters { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+  .filters label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.3px; }
+  .filters select, .filters input {
+    padding: 4px 8px; border: 1px solid var(--border); border-radius: 3px;
+    background: var(--card); color: var(--text); font-size: 12px; outline: none;
+  }
+  .filters select:focus, .filters input:focus { border-color: var(--blue); }
+  .filters .count { font-size: 12px; color: var(--text-dim); margin-left: auto; }
+
+  /* ── Table ── */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th {
+    text-align: left; padding: 8px 10px; color: var(--text-dim);
+    font-weight: 500; border-bottom: 2px solid var(--border);
+    white-space: nowrap; cursor: pointer; user-select: none;
+  }
+  th:hover { color: var(--text); }
+  td { padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  tr:hover td { background: var(--card-hover); }
+  tr.hidden { display: none; }
+
+  .tag-kind {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 10px; font-weight: 500;
+  }
+  .tag-kind.Class { background: #1a3a5e; color: #7ec8e3; }
+  .tag-kind.Interface { background: #3a2a5e; color: #c586c0; }
+  .tag-kind.Enum { background: #3a4a1e; color: #b5cea8; }
+  .tag-src { color: var(--green); font-size: 10px; font-weight: 500; }
+  .tag-jar { color: var(--orange); font-size: 10px; font-weight: 500; }
+
+  .loc { font-size: 11px; color: var(--text-dim); }
+  .loc a { color: var(--blue); text-decoration: none; }
+  .loc a:hover { text-decoration: underline; }
+  .loc .line { color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<h1>类型搜索: ${escapeHtml(query)}</h1>
+<p class="summary">
+  共 <strong>${items.length}</strong> 个类型
+  <span style="color:var(--green)">&#9679; ${totalSrc} 项目源码</span>
+  <span style="color:var(--orange);margin-left:6px">&#9679; ${totalJar} JAR 依赖</span>
+</p>
+
+<div class="filters">
+  <label>种类</label>
+  <select id="filterKind">
+    <option value="all">全部</option>
+    ${kinds.map(k => `<option value="${k}">${k}</option>`).join('')}
+  </select>
+  <label>来源</label>
+  <select id="filterSource">
+    <option value="all">全部</option>
+    <option value="src">项目源码</option>
+    <option value="JAR">JAR 依赖</option>
+  </select>
+  <label>搜索</label>
+  <input type="text" id="filterText" placeholder="名称过滤..." style="width:140px">
+  <span class="count" id="visibleCount">显示 ${items.length}/${items.length}</span>
+</div>
+
+<table>
+  <thead><tr>
+    <th data-sort="kind">种类</th>
+    <th data-sort="fqn" style="width:50%">全限定名</th>
+    <th data-sort="source">来源</th>
+    <th>位置</th>
+  </tr></thead>
+  <tbody id="resultBody">
+    ${items.map((item, idx) => `<tr data-idx="${idx}">
+      <td><span class="tag-kind ${item.kind}">${item.kind}</span></td>
+      <td style="font-family:monospace;font-size:12px">${escapeHtml(item.fqn)}</td>
+      <td><span class="tag-${item.source}">${item.source === 'src' ? '项目源码' : 'JAR 依赖'}</span></td>
+      <td class="loc">${item.source === 'src'
+        ? `<a href="#" data-uri="${escapeHtml(item.uri)}" data-line="${item.line}">${escapeHtml(item.location)}</a><span class="line">:${item.line}</span>`
+        : `<span>${escapeHtml(item.location.substring(0, 80))}</span>`}</td>
+    </tr>`).join('')}
+  </tbody>
+</table>
+
+<script>
+(function() {
+  const items = [${items.map(item => JSON.stringify(item)).join(',\n    ')}];
+
+  // ── 过滤 ──
+  const filterKind = document.getElementById('filterKind');
+  const filterSource = document.getElementById('filterSource');
+  const filterText = document.getElementById('filterText');
+  const countEl = document.getElementById('visibleCount');
+  const rows = document.querySelectorAll('#resultBody tr');
+
+  function applyFilters() {
+    const kind = filterKind.value;
+    const source = filterSource.value;
+    const text = filterText.value.toLowerCase();
+    let visible = 0;
+    rows.forEach((row, i) => {
+      const item = items[i];
+      const match = (kind === 'all' || item.kind === kind)
+        && (source === 'all' || item.source === source)
+        && (!text || item.fqn.toLowerCase().includes(text) || item.kind.toLowerCase().includes(text));
+      row.classList.toggle('hidden', !match);
+      if (match) visible++;
+    });
+    countEl.textContent = '显示 ' + visible + '/' + items.length;
+  }
+  filterKind.addEventListener('change', applyFilters);
+  filterSource.addEventListener('change', applyFilters);
+  filterText.addEventListener('input', applyFilters);
+
+  // ── 排序 ──
+  let sortKey = '';
+  let sortAsc = true;
+  document.querySelectorAll('th[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      if (sortKey === key) sortAsc = !sortAsc;
+      else { sortKey = key; sortAsc = true; }
+      const tbody = document.getElementById('resultBody');
+      const sorted = [...rows].sort((a, b) => {
+        const ia = items[parseInt(a.dataset.idx)];
+        const ib = items[parseInt(b.dataset.idx)];
+        let va = ia[key], vb = ib[key];
+        if (typeof va === 'string') va = va.toLowerCase();
+        if (typeof vb === 'string') vb = vb.toLowerCase();
+        return va < vb ? (sortAsc ? -1 : 1) : va > vb ? (sortAsc ? 1 : -1) : 0;
+      });
+      sorted.forEach(r => tbody.appendChild(r));
+    });
+  });
+
+  // ── 文件链接 ──
+  document.querySelectorAll('a[data-uri]').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      acquireVsCodeApi().postMessage({ type: 'openFile', uri: a.dataset.uri, line: parseInt(a.dataset.line) });
+    });
+  });
+})();
+</script>
+</body>
+</html>`;
+}
+
+function getSourceResultHtml(fqn: string, filePath: string, source: string): string {
+  const truncated = source.length > 10000;
+  const body = truncated ? source.substring(0, 10000) : source;
+  return /* html */`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  :root { --bg: #1e1e1e; --card: #2d2d2d; --border: #3c3c3c; --text: #cccccc; --text-dim: #888888; --blue: #569cd6; --green: #4ec9b0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text); padding: 16px 20px; font-size: 13px;
+  }
+  h1 { font-size: 16px; font-weight: 600; margin-bottom: 2px; }
+  .path { color: var(--text-dim); font-size: 12px; margin-bottom: 14px; }
+  pre {
+    background: #1a1a2e; border: 1px solid var(--border); border-radius: 6px;
+    padding: 14px 16px; font-family: monospace; font-size: 12px;
+    overflow-x: auto; line-height: 1.5; color: var(--text);
+  }
+  .truncated { color: var(--text-dim); font-style: italic; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>${escapeHtml(fqn)}</h1>
+<div class="path">${escapeHtml(filePath)}</div>
+<pre>${escapeHtml(body)}</pre>
+${truncated ? '<div class="truncated">源码超过 10000 字符，已截断。</div>' : ''}
+</body>
+</html>`;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function getTestHtml(): string {
+  return /* html */`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  :root {
+    --bg: #1e1e1e; --card: #2d2d2d; --card-hover: #353535;
+    --border: #3c3c3c; --text: #cccccc; --text-dim: #888888;
+    --blue: #569cd6; --green: #4ec9b0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text); padding: 10px; font-size: 12px;
+  }
+  .tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+  .tab {
+    flex: 1; padding: 6px 0; text-align: center; font-size: 11px;
+    border: 1px solid var(--border); border-radius: 3px;
+    background: var(--card); color: var(--text-dim); cursor: pointer;
+  }
+  .tab.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .tab:hover:not(.active) { background: var(--card-hover); }
+
+  .field { margin-bottom: 8px; }
+  .field label {
+    display: block; font-size: 10px; color: var(--text-dim); margin-bottom: 3px;
+    text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .field input, .field select {
+    width: 100%; padding: 5px 8px; border: 1px solid var(--border); border-radius: 3px;
+    background: var(--card); color: var(--text); font-size: 12px; outline: none;
+  }
+  .field input:focus, .field select:focus { border-color: var(--blue); }
+
+  .btn-run {
+    width: 100%; padding: 6px 0; text-align: center; font-size: 11px;
+    border: 1px solid var(--green); border-radius: 3px;
+    background: #1a3a2e; color: var(--green); cursor: pointer;
+  }
+  .btn-run:hover { background: #1a4a3e; }
+</style>
+</head>
+<body>
+
+<div class="tabs">
+  <div class="tab active" data-mode="search">搜索类型</div>
+  <div class="tab" data-mode="source">获取源码</div>
+</div>
+
+<div id="panelSearch">
+  <div class="field">
+    <label>类型名称</label>
+    <input type="text" id="searchName" placeholder="如 ArrayList, Service" autocomplete="off">
+  </div>
+  <div class="field">
+    <label>匹配模式</label>
+    <select id="searchMode">
+      <option value="strict">精确 (strict)</option>
+      <option value="fuzzy">模糊 (fuzzy)</option>
+    </select>
+  </div>
+  <button class="btn-run" id="btnSearch">&#9654; 搜索</button>
+</div>
+
+<div id="panelSource" style="display:none">
+  <div class="field">
+    <label>全限定类名</label>
+    <input type="text" id="sourceFqn" placeholder="如 java.util.ArrayList" autocomplete="off">
+  </div>
+  <button class="btn-run" id="btnSource">&#9654; 获取源码</button>
+</div>
+
+<script>
+(function() {
+  const api = acquireVsCodeApi();
+
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('panelSearch').style.display = tab.dataset.mode === 'search' ? 'block' : 'none';
+      document.getElementById('panelSource').style.display = tab.dataset.mode === 'source' ? 'block' : 'none';
+    });
+  });
+
+  document.getElementById('btnSearch').addEventListener('click', () => {
+    const name = document.getElementById('searchName').value.trim();
+    if (!name) return;
+    api.postMessage({ type: 'search', name, fuzzy: document.getElementById('searchMode').value === 'fuzzy' });
+  });
+  document.getElementById('searchName').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('btnSearch').click();
+  });
+
+  document.getElementById('btnSource').addEventListener('click', () => {
+    const fqn = document.getElementById('sourceFqn').value.trim();
+    if (!fqn) return;
+    api.postMessage({ type: 'getSource', fqn });
+  });
+  document.getElementById('sourceFqn').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('btnSource').click();
+  });
+})();
+</script>
+</body>
+</html>`;
+}
+
 function getHtml(): string {
   return /* html */`<!DOCTYPE html>
 <html lang="zh-CN">

@@ -28,6 +28,7 @@
     "onStartupFinished",
     "onView:ccMcpLspJavaManagement",
     "onView:ccMcpLspJavaDoc",
+    "onView:ccMcpLspJavaTest",
     "onCommand:cc-mcp-lsp-java.openManagement"
   ],
   "main": "./dist/extension.js",
@@ -52,6 +53,11 @@
           "type": "webview",
           "id": "ccMcpLspJavaDoc",
           "name": "MCP 接口说明"
+        },
+        {
+          "type": "webview",
+          "id": "ccMcpLspJavaTest",
+          "name": "Java 查询测试"
         }
       ]
     },
