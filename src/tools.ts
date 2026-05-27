@@ -8,7 +8,7 @@
 import * as vscode from 'vscode';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { getCallers, getCallees, listMethods, scan, getStatus, isSidecarRunning } from './jacg-bridge.js';
+import { getCallers, getCallees, listMethods, scan, getStatus, isSidecarRunning, discoverProjectClasspath, cleanProjectCache, cleanAllCache } from './jacg-bridge.js';
 
 /* ───────── 符号种类名称映射 ───────── */
 
@@ -144,18 +144,27 @@ export function registerTools(server: McpServer, log: (msg: string) => void) {
     'Analyze method call relationships: upward callers, downward callees, or full call graph',
     {
       command: z
-        .enum(['callers', 'callees', 'list', 'scan', 'status'])
-        .describe('"callers": who calls me; "callees": who I call; "list": all methods; "scan": trigger analysis; "status": check analysis state'),
+        .enum(['callers', 'callees', 'list', 'scan', 'status', 'clean', 'clean-all'])
+        .describe('"callers": who calls me; "callees": who I call; "list": all methods; "scan": trigger analysis; "status": sidecar & project state; "clean": remove current project DB; "clean-all": remove all project DBs'),
       inputDir: z
         .string()
         .optional()
-        .describe('For "scan": directory containing compiled .class or .jar files'),
+        .describe('DEPRECATED: For "scan", classpath is auto-discovered via redhat.java. This overrides auto-discovery if provided.'),
+      className: z
+        .string()
+        .optional()
+        .describe('Filter by class name (e.g. "com.example.MyService"). Only return methods of this class.'),
+      methodName: z
+        .string()
+        .optional()
+        .describe('Filter by method name (e.g. "getUserById"). Only return methods with this name.'),
       keyword: z
         .string()
         .optional()
-        .describe('Filter method names containing this keyword'),
+        .describe('Filter method names containing this keyword (for callers/callees/list, combined with className/methodName).'),
     },
-    async ({ command, inputDir, keyword }) => {
+    async ({ command, inputDir, className, methodName, keyword }) => {
+      const filter = (className || methodName) ? { className, methodName } as const : undefined;
       if (!isSidecarRunning()) {
         return {
           content: [{ type: 'text', text: 'Call-graph sidecar is not running. The Java sidecar process may have failed to start or is still initializing.' }],
@@ -165,28 +174,40 @@ export function registerTools(server: McpServer, log: (msg: string) => void) {
       try {
         switch (command) {
           case 'scan': {
-            if (!inputDir) {
-              return { content: [{ type: 'text', text: 'inputDir is required for scan command. Provide the path to compiled .class or .jar files.' }] };
+            let dirs: string[];
+            if (inputDir) {
+              // 手动覆盖
+              dirs = [inputDir];
+            } else {
+              // 自动发现 classpath
+              const cp = await discoverProjectClasspath(log);
+              if (!cp || (cp.compileOutput.length === 0 && cp.dependencyJars.length === 0)) {
+                return {
+                  content: [{ type: 'text', text: 'Could not auto-discover project classpath. Ensure a Java project is open and redhat.java has finished indexing. You can also provide inputDir manually.' }],
+                };
+              }
+              dirs = [...cp.compileOutput, ...cp.dependencyJars];
+              log(`Auto-discovered ${cp.compileOutput.length} compile dir(s) and ${cp.dependencyJars.length} dep jar(s)`);
             }
-            const ok = await scan(inputDir, log);
+            const ok = await scan(dirs, log);
             return {
-              content: [{ type: 'text', text: ok ? `Scan complete. Database populated from: ${inputDir}` : 'Scan failed. Check extension logs.' }],
+              content: [{ type: 'text', text: ok ? `Scan complete. Analyzed ${dirs.length} path(s).` : 'Scan failed. Check extension logs.' }],
             };
           }
           case 'callers': {
-            const nodes = await getCallers();
+            const nodes = await getCallers(filter);
             const filtered = keyword ? nodes.filter(n => n.method.includes(keyword)) : nodes;
             const lines = formatCallGraph('Upward Callers (who calls this method)', filtered);
             return { content: [{ type: 'text', text: lines }] };
           }
           case 'callees': {
-            const nodes = await getCallees();
+            const nodes = await getCallees(filter);
             const filtered = keyword ? nodes.filter(n => n.method.includes(keyword)) : nodes;
             const lines = formatCallGraph('Downward Callees (who this method calls)', filtered);
             return { content: [{ type: 'text', text: lines }] };
           }
           case 'list': {
-            const methods = await listMethods();
+            const methods = await listMethods(filter);
             const filtered = keyword ? methods.filter(m => m.includes(keyword)) : methods;
             return {
               content: [{ type: 'text', text: `${filtered.length} methods:\n${filtered.join('\n')}` }],
@@ -195,8 +216,16 @@ export function registerTools(server: McpServer, log: (msg: string) => void) {
           case 'status': {
             const s = await getStatus();
             return {
-              content: [{ type: 'text', text: `Sidecar status:\n  Scanned: ${s.scanned}\n  DB: ${s.dbDir}\n  Input: ${s.inputDir}` }],
+              content: [{ type: 'text', text: `Sidecar status:\n  Scanned: ${s.scanned}\n  DB: ${s.dbDir}\n  Project ID: ${s.projectId}` }],
             };
+          }
+          case 'clean': {
+            const ok = await cleanProjectCache(log);
+            return { content: [{ type: 'text', text: ok ? 'Project cache cleared. Run scan again to regenerate.' : 'Clean failed.' }] };
+          }
+          case 'clean-all': {
+            const ok = await cleanAllCache(log);
+            return { content: [{ type: 'text', text: ok ? 'All project caches cleared.' : 'Clean-all failed.' }] };
           }
         }
       } catch (err) {
