@@ -8,11 +8,31 @@
 
 import * as vscode from 'vscode';
 import { startMcpServer, stopMcpServer } from './server.js';
-import { registerManagementView, registerDocView, registerTestView, openManagementPanel } from './panel.js';
-import { startSidecar, stopSidecar } from './jacg-bridge.js';
+import { registerManagementView, registerDocView, registerTestView, registerCallGraphView, openManagementPanel, openCallGraphPanel } from './panel.js';
+import { startSidecar, stopSidecar, isSidecarRunning, getStatus, cleanProjectCache, discoverProjectClasspath, scan as jacgScan } from './jacg-bridge.js';
 
 const LOG_TAG = '[cc-mcp-lsp-java]';
 let outputChannel: vscode.OutputChannel;
+let statusBarItem: vscode.StatusBarItem;
+
+/* ───────── 侧车状态事件（推送至管理面板等 UI） ───────── */
+
+export const _onDidChangeSidecarStatus = new vscode.EventEmitter<{ running: boolean; scanned: boolean; dbDir: string; projectId: string }>();
+export const onDidChangeSidecarStatus = _onDidChangeSidecarStatus.event;
+
+async function updateSidecarStatus() {
+  const running = isSidecarRunning();
+  if (running) {
+    try {
+      const s = await getStatus();
+      _onDidChangeSidecarStatus.fire({ running: true, scanned: s.scanned, dbDir: s.dbDir, projectId: s.projectId });
+    } catch {
+      _onDidChangeSidecarStatus.fire({ running: true, scanned: false, dbDir: '', projectId: '' });
+    }
+  } else {
+    _onDidChangeSidecarStatus.fire({ running: false, scanned: false, dbDir: '', projectId: '' });
+  }
+}
 
 export function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel('CC MCP LSP Java');
@@ -22,11 +42,18 @@ export function activate(context: vscode.ExtensionContext) {
   registerManagementView(context, log);
   registerDocView(context);
   registerTestView(context, log);
+  registerCallGraphView(context, log);
 
   // 注册编辑器标签页命令
   context.subscriptions.push(
     vscode.commands.registerCommand('cc-mcp-lsp-java.openManagement', () => {
       openManagementPanel(context, log);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('cc-mcp-lsp-java.openCallGraph', () => {
+      openCallGraphPanel(context, log);
     })
   );
 
@@ -53,7 +80,44 @@ export function activate(context: vscode.ExtensionContext) {
   }
 
   // 启动 java-all-call-graph 侧车（后台，不阻塞）
-  startSidecar(context, log).catch(() => log('Sidecar start failed (call-graph features unavailable)'));
+  startSidecar(context, log).then(() => updateSidecarStatus()).catch(() => log('Sidecar start failed (call-graph features unavailable)'));
+
+  // ── 状态栏图标 ──
+  statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  statusBarItem.command = 'cc-mcp-lsp-java.openManagement';
+  statusBarItem.tooltip = 'CC MCP LSP Java — 点击打开管理面板';
+  statusBarItem.text = '$(radio-tower) MCP';
+  statusBarItem.show();
+  context.subscriptions.push(statusBarItem);
+
+  // 定时刷新侧车状态
+  const sidecarStatusTimer = setInterval(() => updateSidecarStatus(), 5000);
+  context.subscriptions.push({ dispose: () => clearInterval(sidecarStatusTimer) });
+
+  // ── 侧车命令 ──
+  context.subscriptions.push(
+    vscode.commands.registerCommand('cc-mcp-lsp-java.scanCallGraph', async () => {
+      const cp = await discoverProjectClasspath(log);
+      if (!cp) { vscode.window.showErrorMessage('无法自动发现 Classpath'); return; }
+      const dirs = [...cp.compileOutput, ...cp.dependencyJars];
+      vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '正在扫描调用图...', cancellable: true }, async (progress, token) => {
+        token.onCancellationRequested(() => log('[jacg] Scan cancelled by user'));
+        progress.report({ message: '分析字节码中...' });
+        const ok = await jacgScan(dirs, log);
+        if (ok) vscode.window.showInformationMessage('调用图扫描完成');
+        else vscode.window.showErrorMessage('调用图扫描失败');
+        updateSidecarStatus();
+      });
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('cc-mcp-lsp-java.cleanCallGraph', async () => {
+      const ok = await cleanProjectCache(log);
+      if (ok) { vscode.window.showInformationMessage('调用图缓存已清理'); updateSidecarStatus(); }
+      else vscode.window.showErrorMessage('清理失败');
+    })
+  );
 
   log('Extension activated.');
 }

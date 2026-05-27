@@ -43,14 +43,13 @@ export default function ManagementPanel() {
 
   return (
     <div className="app">
-      {/* Header */}
+      {/* ── MCP Server ── */}
       <div className="header">
         <span className={`status-dot ${running ? 'running' : 'stopped'}`} />
         <h1>MCP LSP Java</h1>
         <span className="status-text">{running ? '运行中' : '已停止'}</span>
       </div>
 
-      {/* Stats */}
       <div className="stat-row">
         <div className="stat-box">
           <div className="stat-label">监听</div>
@@ -67,84 +66,52 @@ export default function ManagementPanel() {
         </div>
       </div>
 
-      {/* Controls */}
       <div className="section">
-        <div className="section-title">控制</div>
+        <div className="section-title">MCP 控制</div>
         <div className="controls">
-          <button className="btn primary" disabled={running} onClick={() => postMessage({ type: 'start' })}>
-            启动
-          </button>
-          <button className="btn" disabled={!running} onClick={() => postMessage({ type: 'restart' })}>
-            重启
-          </button>
-          <button className="btn danger" disabled={!running} onClick={() => postMessage({ type: 'stop' })}>
-            停止
-          </button>
+          <button className="btn primary" disabled={running} onClick={() => postMessage({ type: 'start' })}>启动</button>
+          <button className="btn" disabled={!running} onClick={() => postMessage({ type: 'restart' })}>重启</button>
+          <button className="btn danger" disabled={!running} onClick={() => postMessage({ type: 'stop' })}>停止</button>
           <div className="port-group">
             <span>端口</span>
-            <input
-              type="number"
-              value={port}
-              min={1024}
-              max={65535}
+            <input type="number" value={port} min={1024} max={65535}
               onChange={e => setPort(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleChangePort() }}
-            />
+              onKeyDown={e => { if (e.key === 'Enter') handleChangePort() }} />
           </div>
-          <button className="btn" style={{ fontSize: 10 }} onClick={handleChangePort}>
-            变更
-          </button>
+          <button className="btn" style={{ fontSize: 10 }} onClick={handleChangePort}>变更</button>
         </div>
       </div>
 
-      {/* Connection History */}
+      {/* ── 连接历史 ── */}
       <div className="section">
         <div className="section-title">连接历史</div>
         <div className="table-wrap">
           <table>
-            <thead>
-              <tr>
-                <th>会话</th>
-                <th>建立</th>
-                <th>状态</th>
-              </tr>
-            </thead>
+            <thead><tr><th>会话</th><th>建立</th><th>状态</th></tr></thead>
             <tbody>
-              {sortedConnections().length === 0 ? (
-                <tr>
-                  <td colSpan={3} className="empty">暂无记录</td>
-                </tr>
-              ) : (
-                sortedConnections().map(c => (
-                  <tr key={c.id}>
-                    <td style={{ fontFamily: 'monospace', fontSize: 10 }}>
-                      {c.id.substring(0, 8)}
-                    </td>
-                    <td style={{ whiteSpace: 'nowrap' }}>{fmtTime(c.startTime)}</td>
-                    <td>
-                      <span className={`tag ${!c.endTime ? 'active' : 'closed'}`}>
-                        {!c.endTime ? '活跃' : '已关闭'}
-                      </span>
-                    </td>
-                  </tr>
-                ))
-              )}
+              {sortedConnections().length === 0
+                ? <tr><td colSpan={3} className="empty">暂无记录</td></tr>
+                : sortedConnections().map(c => (
+                    <tr key={c.id}>
+                      <td style={{ fontFamily: 'monospace', fontSize: 10 }}>{c.id.substring(0, 8)}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{fmtTime(c.startTime)}</td>
+                      <td><span className={`tag ${!c.endTime ? 'active' : 'closed'}`}>{!c.endTime ? '活跃' : '已关闭'}</span></td>
+                    </tr>
+                  ))
+              }
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* Restart History */}
+      {/* ── 重启历史 ── */}
       <div className="section">
         <div className="section-title">重启历史</div>
         <div className="log-list">
-          {(info?.restartHistory?.length ?? 0) === 0 ? (
-            <div className="empty">暂无记录</div>
-          ) : (
-            [...(info?.restartHistory ?? [])].reverse().slice(0, 20).map((r, i) => (
-              <div key={i} className="log-item">{r}</div>
-            ))
-          )}
+          {(info?.restartHistory?.length ?? 0) === 0
+            ? <div className="empty">暂无记录</div>
+            : [...(info?.restartHistory ?? [])].reverse().slice(0, 20).map((r, i) => <div key={i} className="log-item">{r}</div>)
+          }
         </div>
       </div>
     </div>

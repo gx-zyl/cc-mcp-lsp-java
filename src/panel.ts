@@ -16,6 +16,7 @@ import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getServerInfo, onDidChangeStatus, startMcpServer, stopMcpServer } from './server.js';
+import { isSidecarRunning, getStatus, getCallers, getCallees, scan as jacgScan, cleanProjectCache, discoverProjectClasspath } from './jacg-bridge.js';
 
 /* ───────── 共享状态 ───────── */
 
@@ -428,5 +429,141 @@ class TestProvider implements vscode.WebviewViewProvider {
         }
       }
     });
+  }
+}
+
+/* ───────── 调用图分析视图 ───────── */
+
+export function registerCallGraphView(context: vscode.ExtensionContext, log: (msg: string) => void) {
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider('ccMcpLspJavaCallGraph', new CallGraphProvider(context, log), {
+      webviewOptions: { retainContextWhenHidden: true },
+    })
+  );
+}
+
+class CallGraphProvider implements vscode.WebviewViewProvider {
+  constructor(private context: vscode.ExtensionContext, private log: (msg: string) => void) {}
+
+  resolveWebviewView(webviewView: vscode.WebviewView) {
+    webviewView.webview.html = resolveWebviewHtml(webviewView.webview, this.context, 'callgraph');
+
+    webviewView.webview.onDidReceiveMessage(async (msg) => {
+      switch (msg.type) {
+        case 'requestSidecarStatus':
+          postSidecarStatus(webviewView.webview);
+          break;
+        case 'startSidecarScan':
+          postSidecarStatus(webviewView.webview);
+          handleSidecarScan(webviewView.webview, this.log);
+          break;
+        case 'cleanSidecarCache':
+          handleSidecarClean(webviewView.webview);
+          break;
+        case 'sidecarQuery': {
+          const queryType = msg.queryType as string;
+          const query = msg.query as string;
+          const parts = query.split(':');
+          const className = parts[0] || '';
+          const methodName = parts[1] || '';
+                    try {
+            const data = queryType === 'callers'
+              ? await getCallers({ className, methodName })
+              : await getCallees({ className, methodName });
+            webviewView.webview.postMessage({ type: 'queryResult', queryType, data });
+          } catch (err) {
+            this.log(`Query error: ${err}`);
+            webviewView.webview.postMessage({ type: 'queryResult', queryType, data: [] });
+          }
+          break;
+        }
+      }
+    });
+  }
+}
+
+/* ───────── 调用图编辑器面板 ───────── */
+
+let callGraphPanel: vscode.WebviewPanel | undefined;
+
+export function openCallGraphPanel(context: vscode.ExtensionContext, log: (msg: string) => void) {
+  if (callGraphPanel) { callGraphPanel.reveal(vscode.ViewColumn.Beside); return; }
+  callGraphPanel = vscode.window.createWebviewPanel(
+    'ccMcpLspJavaCallGraphPanel', 'CC MCP LSP Java — 调用图分析',
+    { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+    { enableScripts: true, retainContextWhenHidden: true }
+  );
+  callGraphPanel.webview.html = resolveWebviewHtml(callGraphPanel.webview, context, 'callgraph');
+
+  const disposable = callGraphPanel.webview.onDidReceiveMessage(async (msg) => {
+    switch (msg.type) {
+      case 'requestSidecarStatus': postSidecarStatus(callGraphPanel?.webview); break;
+      case 'startSidecarScan':
+        postSidecarStatus(callGraphPanel?.webview);
+        await handleSidecarScan(callGraphPanel?.webview, log);
+        break;
+      case 'cleanSidecarCache': await handleSidecarClean(callGraphPanel?.webview, log); break;
+      case 'sidecarQuery': {
+        const queryType = msg.queryType as string;
+        const query = msg.query as string;
+        const parts = query.split(':');
+        const className = parts[0] || '';
+        const methodName = parts[1] || '';
+                try {
+          const data = queryType === 'callers'
+            ? await getCallers({ className, methodName })
+            : await getCallees({ className, methodName });
+          callGraphPanel?.webview.postMessage({ type: 'queryResult', queryType, data });
+        } catch (err) {
+          log(`Query error: ${err}`);
+          callGraphPanel?.webview.postMessage({ type: 'queryResult', queryType, data: [] });
+        }
+        break;
+      }
+    }
+  });
+
+  callGraphPanel.onDidDispose(() => { disposable.dispose(); callGraphPanel = undefined; });
+}
+
+/* ───────── 侧车操作 ───────── */
+
+async function handleSidecarScan(webview: vscode.Webview | undefined, log?: (msg: string) => void) {
+  if (!webview) return;
+  const logger = (msg: string) => {
+    if (log) log(msg);
+    try { webview.postMessage({ type: 'sidecarProgress', message: msg }); } catch { /* webview disposed */ }
+  };
+  const cp = await discoverProjectClasspath(logger);
+  if (!cp) { vscode.window.showErrorMessage('无法自动发现 Classpath'); return; }
+  const dirs = [...cp.compileOutput, ...cp.dependencyJars];
+  const ok = await jacgScan(dirs, logger);
+  if (ok) { vscode.window.showInformationMessage('调用图扫描完成'); }
+  else { vscode.window.showErrorMessage('调用图扫描失败'); }
+  postSidecarStatus(webview);
+}
+
+async function handleSidecarClean(webview: vscode.Webview | undefined) {
+  if (!webview) return;
+  const ok = await cleanProjectCache(_log || (() => {}));
+  if (ok) { vscode.window.showInformationMessage('调用图缓存已清理'); }
+  else { vscode.window.showErrorMessage('清理失败'); }
+  postSidecarStatus(webview);
+}
+
+/* ───────── 侧车状态推送 ───────── */
+
+async function postSidecarStatus(webview: vscode.Webview | undefined) {
+  if (!webview) return;
+  try {
+    const running = isSidecarRunning();
+    if (running) {
+      const s = await getStatus();
+      webview.postMessage({ type: 'sidecarStatus', data: { running: true, scanned: s.scanned, dbDir: s.dbDir, projectId: s.projectId } });
+    } else {
+      webview.postMessage({ type: 'sidecarStatus', data: { running: false, scanned: false, dbDir: '', projectId: '' } });
+    }
+  } catch {
+    webview.postMessage({ type: 'sidecarStatus', data: { running: false, scanned: false, dbDir: '', projectId: '' } });
   }
 }
