@@ -5,13 +5,25 @@
   "publisher": "cc-mcp",
   "version": "0.1.0",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.120.0"
   },
   "categories": [
     "Other",
     "Programming Languages"
   ],
-  "keywords": ["mcp", "java", "jdtls", "lsp", "vscode"],
+  "keywords": [
+    "mcp",
+    "java",
+    "jdtls",
+    "lsp",
+    "vscode"
+  ],
+  "extensionDependencies": [
+    "redhat.java"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -23,7 +35,7 @@
         "cc-mcp-lsp-java.port": {
           "type": "number",
           "default": 38765,
-          "description": "Port for the MCP SSE server."
+          "description": "Port for the MCP Streamable HTTP server."
         },
         "cc-mcp-lsp-java.enabled": {
           "type": "boolean",
@@ -41,7 +53,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "^1.120.0",
     "tsup": "^8.5.0",
     "typescript": "^5.7.0"
   },
