@@ -1,0 +1,55 @@
+{
+  "name": "cc-mcp-lsp-java",
+  "displayName": "CC MCP LSP Java",
+  "description": "MCP server for Java - connects to VS Code's existing JDT.LS via LSP API",
+  "publisher": "cc-mcp",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "keywords": ["mcp", "java", "jdtls", "lsp", "vscode"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "CC MCP LSP Java",
+      "properties": {
+        "cc-mcp-lsp-java.port": {
+          "type": "number",
+          "default": 38765,
+          "description": "Port for the MCP SSE server."
+        },
+        "cc-mcp-lsp-java.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable the MCP server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "watch": "tsup --watch",
+    "package": "vsce package",
+    "compile": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.85.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.8.0",
+    "zod": "^3.23.0"
+  },
+  "files": [
+    "dist"
+  ]
+}
