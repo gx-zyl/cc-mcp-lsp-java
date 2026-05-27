@@ -16,6 +16,28 @@ import { getServerInfo, onDidChangeStatus, startMcpServer, stopMcpServer } from 
 let _context: vscode.ExtensionContext;
 let _log: (msg: string) => void;
 
+/* ───────── MCP 说明文档标签页 ───────── */
+
+let docPanel: vscode.WebviewPanel | undefined;
+
+export function openMcpDocPanel() {
+  if (docPanel) {
+    docPanel.reveal(vscode.ViewColumn.Beside);
+    return;
+  }
+
+  docPanel = vscode.window.createWebviewPanel(
+    'ccMcpLspJavaDoc',
+    'MCP LSP Java 接口说明',
+    { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] }
+  );
+
+  docPanel.webview.html = getDocHtml();
+
+  docPanel.onDidDispose(() => { docPanel = undefined; });
+}
+
 /* ───────── 编辑器标签页面板 ───────── */
 
 let panel: vscode.WebviewPanel | undefined;
@@ -61,6 +83,9 @@ export function openManagementPanel(context: vscode.ExtensionContext, log: (msg:
       case 'stop':
         await stopMcpServer();
         log('MCP server stopped from management panel.');
+        break;
+      case 'openDoc':
+        openMcpDocPanel();
         break;
       case 'requestStatus':
         panel?.webview.postMessage({ type: 'status', data: getServerInfo() });
@@ -123,6 +148,9 @@ class ManagementProvider implements vscode.WebviewViewProvider {
           await stopMcpServer();
           _log('MCP server stopped from management panel.');
           break;
+        case 'openDoc':
+          openMcpDocPanel();
+          break;
         case 'requestStatus':
           webviewView.webview.postMessage({ type: 'status', data: getServerInfo() });
           break;
@@ -135,6 +163,59 @@ class ManagementProvider implements vscode.WebviewViewProvider {
       this._view = undefined;
     });
   }
+}
+
+/* ───────── MCP 接口说明视图 ───────── */
+
+export function registerDocView(context: vscode.ExtensionContext) {
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider('ccMcpLspJavaDoc', new DocProvider(), {
+      webviewOptions: { retainContextWhenHidden: true },
+    })
+  );
+}
+
+class DocProvider implements vscode.WebviewViewProvider {
+  resolveWebviewView(webviewView: vscode.WebviewView) {
+    webviewView.webview.options = { enableScripts: true, localResourceRoots: [] };
+    webviewView.webview.html = getDocBtnHtml();
+    webviewView.webview.onDidReceiveMessage(async (msg) => {
+      if (msg.type === 'openDoc') openMcpDocPanel();
+    });
+  }
+}
+
+function getDocBtnHtml(): string {
+  return /* html */`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #1e1e1e; padding: 10px; margin: 0;
+  }
+  .btn {
+    width: 100%; padding: 8px 0; text-align: center; font-size: 12px;
+    border: 1px solid #3c3c3c; border-radius: 4px;
+    background: #2d2d2d; color: #cccccc; cursor: pointer; transition: background 0.15s;
+  }
+  .btn:hover { background: #353535; }
+</style>
+</head>
+<body>
+<button class="btn" id="btnOpenDoc">打开接口说明文档</button>
+<script>
+(function() {
+  const api = acquireVsCodeApi();
+  document.getElementById('btnOpenDoc').addEventListener('click', () => {
+    api.postMessage({ type: 'openDoc' });
+  });
+})();
+</script>
+</body>
+</html>`;
 }
 
 function getHtml(): string {
@@ -301,6 +382,7 @@ function getHtml(): string {
   </div>
 </div>
 
+
 <script>
 (function() {
   const api = acquireVsCodeApi();
@@ -376,6 +458,210 @@ function getHtml(): string {
   window.addEventListener('message', (e) => {
     if (e.data.type === 'status') render(e.data.data);
   });
+  api.postMessage({ type: 'requestStatus' });
+})();
+</script>
+</body>
+</html>`;
+}
+
+function getDocHtml(): string {
+  return /* html */`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --card: #2d2d2d;
+    --border: #3c3c3c;
+    --text: #cccccc;
+    --text-dim: #888888;
+    --green: #4ec9b0;
+    --blue: #569cd6;
+    --orange: #ce9178;
+    --yellow: #dcdcaa;
+    --purple: #c586c0;
+    --link: #3794ff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px 32px;
+    font-size: 14px; line-height: 1.7; max-width: 860px;
+  }
+  h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 28px; }
+  h2 { font-size: 16px; font-weight: 600; margin: 28px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 14px; font-weight: 600; margin: 20px 0 8px; color: var(--blue); }
+  h4 { font-size: 13px; font-weight: 600; margin: 14px 0 6px; color: var(--yellow); }
+  p, li { margin: 6px 0; color: var(--text-dim); }
+  ul, ol { padding-left: 20px; }
+  li { margin: 4px 0; }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { background: var(--card); padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 13px; color: var(--orange); }
+  pre {
+    background: #1a1a2e; border: 1px solid var(--border); border-radius: 6px;
+    padding: 14px 16px; font-family: monospace; font-size: 13px; overflow-x: auto; margin: 10px 0; line-height: 1.5; color: var(--text);
+  }
+  pre .comment { color: #6a9955; }
+  pre .keyword { color: var(--purple); }
+  pre .string { color: var(--orange); }
+  pre .func { color: var(--yellow); }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+  th { text-align: left; padding: 8px 10px; color: var(--text-dim); font-weight: 500; border-bottom: 1px solid var(--border); }
+  td { padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  td:first-child { font-family: monospace; white-space: nowrap; }
+  tr:hover td { background: var(--card-hover); }
+  td .dim { color: var(--text-dim); font-family: inherit; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 500; }
+  .tag.req { background: #1a3a2e; color: var(--green); }
+  .tag.opt { background: #2a2a3e; color: var(--text-dim); }
+  .info-box { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; margin: 14px 0; }
+  .info-box .row { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
+  .info-box .label { color: var(--text-dim); min-width: 100px; font-size: 13px; }
+  .info-box .value { font-family: monospace; font-size: 13px; }
+  .toc { margin: 16px 0 20px; padding: 12px 16px; background: var(--card); border-radius: 6px; border: 1px solid var(--border); }
+  .toc a { display: block; padding: 2px 0; font-size: 13px; }
+  .toc .l2 { padding-left: 16px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h1>CC MCP LSP Java — 接口说明</h1>
+<p class="subtitle">
+  Streamable HTTP 协议 MCP 服务器，通过 VS Code 内置 LSP API 桥接 JDT.LS (Eclipse Java Language Server)。
+  <a href="https://spec.modelcontextprotocol.io/specification/2025-03-26/" target="_blank">MCP 规范</a>
+  ·
+  <a href="https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/" target="_blank">LSP 3.17 规范</a>
+  ·
+  <a href="https://github.com/redhat-developer/vscode-java" target="_blank">JDT.LS (redhat.java)</a>
+</p>
+
+<div class="toc">
+  <a href="#overview">一、架构概述</a>
+  <a href="#server-info" class="l2">服务信息</a>
+  <a href="#lsp-bridge" class="l2">LSP 桥接原理</a>
+  <a href="#config">二、客户端配置</a>
+  <a href="#tools">三、工具参考</a>
+  <a href="#tool-search" class="l2">1. searchJavaTypes</a>
+  <a href="#tool-source" class="l2">2. getSourceCodeByFQN</a>
+  <a href="#lsp-methods">四、LSP 方法映射</a>
+  <a href="#use-cases">五、使用场景</a>
+  <a href="#limits">六、限制与注意事项</a>
+</div>
+
+<h2 id="overview">一、架构概述</h2>
+<h3 id="server-info">服务信息</h3>
+<div class="info-box">
+  <div class="row"><span class="label">协议</span><span class="value">Streamable HTTP (MCP)</span></div>
+  <div class="row"><span class="label">端点</span><span class="value" id="docEndpoint">http://localhost:38765/mcp</span></div>
+  <div class="row"><span class="label">方法</span><span class="value">POST /mcp</span></div>
+  <div class="row"><span class="label">Session</span><span class="value">Mcp-Session-Id header 自动管理</span></div>
+  <div class="row"><span class="label">健康检查</span><span class="value">GET /health → { status, sessions }</span></div>
+</div>
+
+<h3 id="lsp-bridge">LSP 桥接原理</h3>
+<p>本扩展<strong>不直接启动 JDT.LS 进程</strong>，而是复用 VS Code 已集成的 JDT.LS。当打开 Java 项目时 <code>redhat.java</code> 扩展自动启动 JDT.LS 并与编辑器建立 LSP 连接。本扩展通过 VS Code 的 <code>commands.executeCommand</code> 调用内置 LSP Provider，底层向 JDT.LS 发送 LSP 请求并返回结果。</p>
+
+<p>链路：AI Client → MCP → cc-mcp-lsp-java → VS Code API → JDT.LS → LSP → Eclipse JDT</p>
+
+<p>参考：<a href="https://code.visualstudio.com/api/language-extensions/language-server-extension-guide" target="_blank">VS Code LSP 扩展指南</a> · <a href="https://github.com/eclipse-jdtls/eclipse.jdt.ls" target="_blank">Eclipse JDT.LS</a></p>
+
+<h2 id="config">二、客户端配置</h2>
+<p>在 Claude Desktop、Cursor 或其他 MCP 客户端中配置：</p>
+<pre>{
+  <span class="keyword">"mcpServers"</span>: {
+    <span class="keyword">"cc-mcp-lsp-java"</span>: {
+      <span class="keyword">"url"</span>: <span class="string">"http://localhost:38765/mcp"</span>
+    }
+  }
+}</pre>
+<p><a href="https://modelcontextprotocol.io/quickstart/user" target="_blank">MCP 客户端快速开始 →</a></p>
+
+<h2 id="tools">三、工具参考</h2>
+<h3 id="tool-search">1. searchJavaTypes — 搜索 Java 类型</h3>
+<p>调用 <code>executeWorkspaceSymbolProvider</code>，对应 LSP <a href="https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#workspace_symbol" target="_blank">workspace/symbol</a>。适用于查找不确定完整路径的类、探索项目中的类型分布。</p>
+<table>
+  <tr><th>参数</th><th>类型</th><th>说明</th></tr>
+  <tr><td>name</td><td><span class="tag req">必填</span></td><td>类型名称或名称片段，fuzzy 模式自动加通配符 <code>*name*</code></td></tr>
+  <tr><td>matchMode</td><td><span class="tag opt">可选</span></td><td><code>strict</code> 精确匹配（默认）/ <code>fuzzy</code> 模糊搜索</td></tr>
+</table>
+<p>返回：类型种类、全限定名、文件路径、行号、来源（项目源码 <code>[src]</code> / JAR <code>[JAR]</code>）</p>
+
+<pre><span class="comment">// 精确查找 ArrayList</span>
+<span class="func">searchJavaTypes</span>({ <span class="keyword">name</span>: <span class="string">"ArrayList"</span>, <span class="keyword">matchMode</span>: <span class="string">"strict"</span> })
+
+<span class="comment">// 模糊搜索项目中所有含 "Controller" 的类</span>
+<span class="func">searchJavaTypes</span>({ <span class="keyword">name</span>: <span class="string">"Controller"</span>, <span class="keyword">matchMode</span>: <span class="string">"fuzzy"</span> })</pre>
+
+<h3 id="tool-source">2. getSourceCodeByFQN — 获取源码</h3>
+<p>按全限定名获取 Java 类型源码。先调用 <code>executeWorkspaceSymbolProvider</code> 定位文件，再用 <code>executeDocumentSymbolProvider</code>（LSP <a href="https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_documentSymbol" target="_blank">textDocument/documentSymbol</a>）按方法名过滤。</p>
+<table>
+  <tr><th>参数</th><th>类型</th><th>说明</th></tr>
+  <tr><td>fullyQualifiedName</td><td><span class="tag req">必填</span></td><td>全限定类名，如 <code>java.util.ArrayList</code></td></tr>
+  <tr><td>methodNames</td><td><span class="tag opt">可选</span></td><td>字符串数组，只返回这些方法的源码片段</td></tr>
+</table>
+<p>项目 .java 文件返回完整源码；JAR 依赖返回签名信息。</p>
+
+<pre><span class="comment">// 获取完整源码</span>
+<span class="func">getSourceCodeByFQN</span>({ <span class="keyword">fullyQualifiedName</span>: <span class="string">"java.util.ArrayList"</span> })
+
+<span class="comment">// 只获取 findById 和 save 方法</span>
+<span class="func">getSourceCodeByFQN</span>({
+  <span class="keyword">fullyQualifiedName</span>: <span class="string">"com.example.MyService"</span>,
+  <span class="keyword">methodNames</span>: [<span class="string">"findById"</span>, <span class="string">"save"</span>]
+})</pre>
+
+<h2 id="lsp-methods">四、LSP 方法映射</h2>
+<table>
+  <tr><th>VS Code 命令</th><th>LSP 方法</th><th>用途</th><th>MCP 工具</th></tr>
+  <tr><td><code>executeWorkspaceSymbolProvider</code></td><td><a href="https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#workspace_symbol" target="_blank">workspace/symbol</a></td><td>工作区符号搜索</td><td>searchJavaTypes<br>getSourceCodeByFQN</td></tr>
+  <tr><td><code>executeDocumentSymbolProvider</code></td><td><a href="https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_documentSymbol" target="_blank">textDocument/documentSymbol</a></td><td>文档符号列表</td><td>getSourceCodeByFQN</td></tr>
+  <tr><td><code>executeDefinitionProvider</code></td><td><a href="https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_definition" target="_blank">textDocument/definition</a></td><td>跳转到定义</td><td><span class="dim">规划中</span></td></tr>
+  <tr><td><code>executeReferenceProvider</code></td><td><a href="https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_references" target="_blank">textDocument/references</a></td><td>查找引用</td><td><span class="dim">规划中</span></td></tr>
+  <tr><td><code>executeHoverProvider</code></td><td><a href="https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_hover" target="_blank">textDocument/hover</a></td><td>悬停提示</td><td><span class="dim">规划中</span></td></tr>
+  <tr><td><code>executeCompletionItemProvider</code></td><td><a href="https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_completion" target="_blank">textDocument/completion</a></td><td>代码补全</td><td><span class="dim">规划中</span></td></tr>
+</table>
+<p><a href="https://code.visualstudio.com/api/references/commands" target="_blank">VS Code 命令参考 →</a></p>
+
+<h2 id="use-cases">五、使用场景</h2>
+<h3>场景 1：在新项目中探索代码结构</h3>
+<pre><span class="comment">// 1. 模糊搜索了解有哪些 Service</span>
+<span class="func">searchJavaTypes</span>({ <span class="keyword">name</span>: <span class="string">"Service"</span>, <span class="keyword">matchMode</span>: <span class="string">"fuzzy"</span> })
+
+<span class="comment">// 2. 查看核心 Service 的完整源码</span>
+<span class="func">getSourceCodeByFQN</span>({ <span class="keyword">fullyQualifiedName</span>: <span class="string">"com.acme.order.OrderService"</span> })</pre>
+
+<h3>场景 2：理解第三方库用法</h3>
+<pre><span class="comment">// 搜索 JAR 中的工具类</span>
+<span class="func">searchJavaTypes</span>({ <span class="keyword">name</span>: <span class="string">"StringUtils"</span>, <span class="keyword">matchMode</span>: <span class="string">"fuzzy"</span> })
+
+<span class="comment">// 获取签名（JAR 中只返回签名）</span>
+<span class="func">getSourceCodeByFQN</span>({ <span class="keyword">fullyQualifiedName</span>: <span class="string">"org.apache.commons.lang3.StringUtils"</span> })</pre>
+
+<h2 id="limits">六、限制与注意事项</h2>
+<table>
+  <tr><th>限制项</th><th>说明</th></tr>
+  <tr><td>JDT.LS 依赖</td><td>需要 <code>redhat.java</code> 安装并激活，VS Code 必须打开 Java 项目</td></tr>
+  <tr><td>索引进度</td><td>JDT.LS 索引完成前搜索结果可能不完整</td></tr>
+  <tr><td>JAR 源码</td><td>编译依赖只返回方法签名，无完整实现</td></tr>
+  <tr><td>端口配置</td><td>默认 38765，设置 <code>cc-mcp-lsp-java.port</code></td></tr>
+  <tr><td>Session</td><td>管理面板可查看活跃会话和连接历史；重启后所有会话断开</td></tr>
+  <tr><td>网络</td><td>仅监听 localhost，不暴露到网络</td></tr>
+</table>
+
+<script>
+(function() {
+  window.addEventListener('message', (e) => {
+    if (e.data.type === 'status' && e.data.data.running) {
+      const ep = document.getElementById('docEndpoint');
+      if (ep) ep.textContent = 'http://' + e.data.data.host + ':' + e.data.data.port + '/mcp';
+    }
+  });
+  const api = acquireVsCodeApi();
   api.postMessage({ type: 'requestStatus' });
 })();
 </script>

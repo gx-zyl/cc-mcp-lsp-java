@@ -8,7 +8,7 @@
 
 import * as vscode from 'vscode';
 import { startMcpServer, stopMcpServer } from './server.js';
-import { registerManagementView, openManagementPanel } from './panel.js';
+import { registerManagementView, registerDocView, openManagementPanel } from './panel.js';
 
 const LOG_TAG = '[cc-mcp-lsp-java]';
 let outputChannel: vscode.OutputChannel;
@@ -19,6 +19,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // 注册左侧活动栏侧边视图
   registerManagementView(context, log);
+  registerDocView(context);
 
   // 注册编辑器标签页命令
   context.subscriptions.push(

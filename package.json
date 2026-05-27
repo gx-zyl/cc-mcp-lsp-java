@@ -27,6 +27,7 @@
   "activationEvents": [
     "onStartupFinished",
     "onView:ccMcpLspJavaManagement",
+    "onView:ccMcpLspJavaDoc",
     "onCommand:cc-mcp-lsp-java.openManagement"
   ],
   "main": "./dist/extension.js",
@@ -46,6 +47,11 @@
           "type": "webview",
           "id": "ccMcpLspJavaManagement",
           "name": "管理面板"
+        },
+        {
+          "type": "webview",
+          "id": "ccMcpLspJavaDoc",
+          "name": "MCP 接口说明"
         }
       ]
     },
