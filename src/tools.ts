@@ -8,6 +8,7 @@
 import * as vscode from 'vscode';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { getCallers, getCallees, listMethods, scan, getStatus, isSidecarRunning } from './jacg-bridge.js';
 
 /* ───────── 符号种类名称映射 ───────── */
 
@@ -135,6 +136,87 @@ export function registerTools(server: McpServer, log: (msg: string) => void) {
       }
     }
   );
+
+  /* ─── Tool 3: analyzeCallGraph（调用图分析 - 需侧车） ─── */
+
+  server.tool(
+    'analyzeCallGraph',
+    'Analyze method call relationships: upward callers, downward callees, or full call graph',
+    {
+      command: z
+        .enum(['callers', 'callees', 'list', 'scan', 'status'])
+        .describe('"callers": who calls me; "callees": who I call; "list": all methods; "scan": trigger analysis; "status": check analysis state'),
+      inputDir: z
+        .string()
+        .optional()
+        .describe('For "scan": directory containing compiled .class or .jar files'),
+      keyword: z
+        .string()
+        .optional()
+        .describe('Filter method names containing this keyword'),
+    },
+    async ({ command, inputDir, keyword }) => {
+      if (!isSidecarRunning()) {
+        return {
+          content: [{ type: 'text', text: 'Call-graph sidecar is not running. The Java sidecar process may have failed to start or is still initializing.' }],
+        };
+      }
+
+      try {
+        switch (command) {
+          case 'scan': {
+            if (!inputDir) {
+              return { content: [{ type: 'text', text: 'inputDir is required for scan command. Provide the path to compiled .class or .jar files.' }] };
+            }
+            const ok = await scan(inputDir, log);
+            return {
+              content: [{ type: 'text', text: ok ? `Scan complete. Database populated from: ${inputDir}` : 'Scan failed. Check extension logs.' }],
+            };
+          }
+          case 'callers': {
+            const nodes = await getCallers();
+            const filtered = keyword ? nodes.filter(n => n.method.includes(keyword)) : nodes;
+            const lines = formatCallGraph('Upward Callers (who calls this method)', filtered);
+            return { content: [{ type: 'text', text: lines }] };
+          }
+          case 'callees': {
+            const nodes = await getCallees();
+            const filtered = keyword ? nodes.filter(n => n.method.includes(keyword)) : nodes;
+            const lines = formatCallGraph('Downward Callees (who this method calls)', filtered);
+            return { content: [{ type: 'text', text: lines }] };
+          }
+          case 'list': {
+            const methods = await listMethods();
+            const filtered = keyword ? methods.filter(m => m.includes(keyword)) : methods;
+            return {
+              content: [{ type: 'text', text: `${filtered.length} methods:\n${filtered.join('\n')}` }],
+            };
+          }
+          case 'status': {
+            const s = await getStatus();
+            return {
+              content: [{ type: 'text', text: `Sidecar status:\n  Scanned: ${s.scanned}\n  DB: ${s.dbDir}\n  Input: ${s.inputDir}` }],
+            };
+          }
+        }
+      } catch (err) {
+        log(`analyzeCallGraph error: ${err}`);
+        return { content: [{ type: 'text', text: `Error: ${err}` }], isError: true };
+      }
+    }
+  );
+}
+
+function formatCallGraph(title: string, nodes: { method: string; related: string[] }[]): string {
+  const lines: string[] = [`== ${title} ==`, `Total: ${nodes.length} nodes`, ''];
+  for (const n of nodes) {
+    lines.push(`  ${n.method}`);
+    for (const r of n.related) {
+      lines.push(`    → ${r}`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
 }
 
 /* ───────── 查询实现 ───────── */

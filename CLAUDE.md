@@ -15,6 +15,9 @@
 npm run build          # vite build + tsup（先构建 webview，再构建扩展）
 npm run watch          # tsup --watch（扩展端热更）
 npm run watch:webview  # vite build --watch（webview 端热更）
+
+# Java 侧车（调用图分析 — 修改后需手动构建）
+cd java-sidecar && mvn package -DskipTests
 ```
 
 ### 构建架构
@@ -23,6 +26,9 @@ npm run watch:webview  # vite build --watch（webview 端热更）
 - **Webview 端**：`src/webview/*` → Vite + React 19 → `dist-webview/`
   - 4 个独立入口：management / test / doc / result
   - 出口为自包含 HTML（`dist-webview/<name>/index.html`），asset 路径由扩展运行时自动转换
+- **Java 侧车**：`java-sidecar/**/*.java` → Maven → `java-sidecar/target/jacg-sidecar-0.1.0-jar-with-dependencies.jar`
+  - 扩展激活时通过 `jacg-bridge.ts` 以子进程方式启动
+  - 提供 HTTP JSON-RPC（localhost:38766）供扩展查询调用图
 - 面板通过 `panel.ts` 中 `resolveWebviewHtml()` 读取并注入 webview
 
 ### Webview 开发注意事项
@@ -32,6 +38,34 @@ npm run watch:webview  # vite build --watch（webview 端热更）
 - 扩展端与 webview 通信：统一 `postMessage` 协议 `{ type: string, ... }`
 - 共享模块位于 `src/webview/shared/`：`hooks.ts`（useVscodeListener, postMessage）、`types.ts`、`vscode-api.ts`
 - CSS 目前合并输出，类名注意避免跨视图冲突
+
+### java-all-call-graph 侧车
+
+- **用途**：字节码级方法调用图分析（谁调了谁）
+- **依赖**：`java-all-call-graph:4.0.6` + `java-callgraph2:4.0.4` + H2 + BCEL
+- **Maven**：`D:\apache-maven-3.9.16\apache-maven-3.9.16\bin\mvn.cmd`
+- **源码**：Maven dependency-plugin 已配置自动下载 sources.jar
+- **数据库**：`~/.cc-mcp-lsp-java/jacg/jacg_db.h2.db`（H2 文件模式）
+- **阶段1**：解析 .class / JAR → 填充 H2。`skipWhenNotModified=true` 缓存
+- **阶段2**：查询调用图，内存模式返回 Java 对象，桥接层转 JSON
+- **MCP 工具**：`analyzeCallGraph { command: scan|callers|callees|list|status }`
+
+### 项目结构
+
+```
+cc-mcp-lsp-java/
+├── src/
+│   ├── extension.ts         # 插件入口
+│   ├── server.ts            # MCP HTTP 服务器
+│   ├── tools.ts             # MCP 工具（含 analyzeCallGraph）
+│   ├── panel.ts             # Webview 面板管理
+│   └── jacg-bridge.ts       # Java 侧车桥接（HTTP 客户端 + 进程管理）
+├── src/webview/             # React 面板源码
+├── java-sidecar/            # Java 侧车（Maven 项目）
+├── docs/                    # 项目文档
+├── dist/                    # 扩展构建产物
+└── dist-webview/            # Webview 构建产物
+```
 
 ## 本地测试
 

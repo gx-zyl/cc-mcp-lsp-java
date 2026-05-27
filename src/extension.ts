@@ -9,6 +9,7 @@
 import * as vscode from 'vscode';
 import { startMcpServer, stopMcpServer } from './server.js';
 import { registerManagementView, registerDocView, registerTestView, openManagementPanel } from './panel.js';
+import { startSidecar, stopSidecar } from './jacg-bridge.js';
 
 const LOG_TAG = '[cc-mcp-lsp-java]';
 let outputChannel: vscode.OutputChannel;
@@ -51,12 +52,16 @@ export function activate(context: vscode.ExtensionContext) {
     startMcpServer(context, log);
   }
 
+  // 启动 java-all-call-graph 侧车（后台，不阻塞）
+  startSidecar(context, log).catch(() => log('Sidecar start failed (call-graph features unavailable)'));
+
   log('Extension activated.');
 }
 
 export function deactivate() {
   log('Extension deactivating...');
   stopMcpServer();
+  stopSidecar();
   outputChannel?.dispose();
 }
 

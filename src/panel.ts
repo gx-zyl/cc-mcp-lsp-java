@@ -331,12 +331,13 @@ class TestProvider implements vscode.WebviewViewProvider {
             for (const sym of symbols) {
               if (!typeKinds.has(sym.kind)) continue;
               const absPath = sym.location.uri.fsPath;
+              const isFileScheme = sym.location.uri.scheme === 'file';
               items.push({
                 kind: KIND_LABEL[sym.kind] || `Kind(${sym.kind})`,
                 fqn: sym.containerName ? `${sym.containerName}.${sym.name}` : sym.name,
-                source: sym.location.uri.scheme === 'file' ? 'src' : 'JAR',
-                location: absPath || sym.location.uri.toString(),
-                relPath: absPath ? vscode.workspace.asRelativePath(absPath) : sym.location.uri.toString(),
+                source: isFileScheme ? 'src' : 'JAR',
+                location: isFileScheme ? absPath : sym.location.uri.toString(),
+                relPath: isFileScheme ? vscode.workspace.asRelativePath(absPath) : sym.location.uri.toString(),
                 line: sym.location.range.start.line + 1,
                 uri: sym.location.uri.toString(),
               });
@@ -377,12 +378,13 @@ class TestProvider implements vscode.WebviewViewProvider {
               for (const sym of symbols) {
                 if (!typeKinds.has(sym.kind)) continue;
                 const absPath = sym.location.uri.fsPath;
+                const isFileScheme = sym.location.uri.scheme === 'file';
                 items.push({
                   kind: KIND_LABEL[sym.kind] || `Kind(${sym.kind})`,
                   fqn: sym.containerName ? `${sym.containerName}.${sym.name}` : sym.name,
-                  source: sym.location.uri.scheme === 'file' ? 'src' : 'JAR',
-                  location: absPath || sym.location.uri.toString(),
-                  relPath: absPath ? vscode.workspace.asRelativePath(absPath) : sym.location.uri.toString(),
+                  source: isFileScheme ? 'src' : 'JAR',
+                  location: isFileScheme ? absPath : sym.location.uri.toString(),
+                  relPath: isFileScheme ? vscode.workspace.asRelativePath(absPath) : sym.location.uri.toString(),
                   line: sym.location.range.start.line + 1,
                   uri: sym.location.uri.toString(),
                 });
