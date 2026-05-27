@@ -239,28 +239,44 @@ interface SearchResultItem {
   fqn: string;
   source: 'src' | 'JAR';
   location: string;
+  relPath: string;
   line: number;
   uri: string;
 }
 
-let resultCounter = 0;
+/** 复用搜索结果/源码面板 */
+let resultPanel: vscode.WebviewPanel | undefined;
+let resultPanelDisposable: vscode.Disposable | undefined;
 
 function openResultPanel(title: string, html: string) {
-  resultCounter++;
-  const panel = vscode.window.createWebviewPanel(
-    `ccMcpLspJavaResult${resultCounter}`,
+  // 复用已有面板
+  if (resultPanel) {
+    resultPanel.dispose();
+  }
+
+  resultPanel = vscode.window.createWebviewPanel(
+    'ccMcpLspJavaResult',
     title,
     { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
     { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] }
   );
-  panel.webview.html = html;
-  panel.webview.onDidReceiveMessage((msg) => {
+  resultPanel.webview.html = html;
+
+  const disposable = resultPanel.webview.onDidReceiveMessage((msg) => {
     if (msg.type === 'openFile') {
       const uri = vscode.Uri.parse(msg.uri);
       vscode.window.showTextDocument(uri, { selection: new vscode.Range(msg.line - 1, 0, msg.line - 1, 0) });
     }
   });
-  return panel;
+
+  resultPanel.onDidDispose(() => {
+    disposable.dispose();
+    resultPanel = undefined;
+    resultPanelDisposable = undefined;
+  });
+
+  resultPanelDisposable = disposable;
+  return resultPanel;
 }
 
 class TestProvider implements vscode.WebviewViewProvider {
@@ -286,11 +302,13 @@ class TestProvider implements vscode.WebviewViewProvider {
             const items: SearchResultItem[] = [];
             for (const sym of symbols) {
               if (!typeKinds.has(sym.kind)) continue;
+              const absPath = sym.location.uri.fsPath;
               items.push({
                 kind: KIND_LABEL[sym.kind] || `Kind(${sym.kind})`,
                 fqn: sym.containerName ? `${sym.containerName}.${sym.name}` : sym.name,
                 source: sym.location.uri.scheme === 'file' ? 'src' : 'JAR',
-                location: sym.location.uri.fsPath || sym.location.uri.toString(),
+                location: absPath || sym.location.uri.toString(),
+                relPath: absPath ? vscode.workspace.asRelativePath(absPath) : sym.location.uri.toString(),
                 line: sym.location.range.start.line + 1,
                 uri: sym.location.uri.toString(),
               });
@@ -311,13 +329,40 @@ class TestProvider implements vscode.WebviewViewProvider {
           try {
             const parts = msg.fqn.split('.');
             const simpleName = parts.pop()!;
+            // 模糊模式用通配符搜索；精确模式按原名搜索
+            const query = msg.fuzzy ? `*${simpleName}*` : simpleName;
             const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
-              'vscode.executeWorkspaceSymbolProvider', simpleName
+              'vscode.executeWorkspaceSymbolProvider', query
             );
+
             if (!symbols || symbols.length === 0) {
               vscode.window.showInformationMessage(`未找到 "${msg.fqn}"`);
               return;
             }
+
+            // 模糊模式且有多个结果 → 显示候选列表
+            if (msg.fuzzy && symbols.length > 1) {
+              const typeKinds = new Set([vscode.SymbolKind.Class, vscode.SymbolKind.Interface, vscode.SymbolKind.Enum]);
+              const items: SearchResultItem[] = [];
+              for (const sym of symbols) {
+                if (!typeKinds.has(sym.kind)) continue;
+                const absPath = sym.location.uri.fsPath;
+                items.push({
+                  kind: KIND_LABEL[sym.kind] || `Kind(${sym.kind})`,
+                  fqn: sym.containerName ? `${sym.containerName}.${sym.name}` : sym.name,
+                  source: sym.location.uri.scheme === 'file' ? 'src' : 'JAR',
+                  location: absPath || sym.location.uri.toString(),
+                  relPath: absPath ? vscode.workspace.asRelativePath(absPath) : sym.location.uri.toString(),
+                  line: sym.location.range.start.line + 1,
+                  uri: sym.location.uri.toString(),
+                });
+              }
+              if (items.length > 0) {
+                openResultPanel(`模糊搜索: ${simpleName}`, getSearchResultHtml(simpleName, items, query));
+                return;
+              }
+            }
+
             const match = symbols.find(s => s.name === simpleName && s.containerName === parts.join('.'))
               || symbols.find(s => s.name === simpleName);
             if (!match) {
@@ -330,7 +375,7 @@ class TestProvider implements vscode.WebviewViewProvider {
             }
             const doc = await vscode.workspace.openTextDocument(match.location.uri);
             const source = doc.getText();
-            openResultPanel(`源码: ${msg.fqn}`, getSourceResultHtml(msg.fqn, match.location.uri.fsPath, source));
+            openResultPanel(`源码: ${msg.fqn}`, getSourceResultHtml(msg.fqn, match.location.uri.fsPath, source, match.location.uri.toString()));
           } catch (err) {
             this.log(`getSource error: ${err}`);
             vscode.window.showErrorMessage(`获取源码失败: ${err}`);
@@ -406,6 +451,33 @@ function getSearchResultHtml(query: string, items: SearchResultItem[], rawQuery:
   .loc a { color: var(--blue); text-decoration: none; }
   .loc a:hover { text-decoration: underline; }
   .loc .line { color: var(--text-dim); }
+
+  /* ── 路径悬停详情 ── */
+  .loc-cell { position: relative; cursor: default; }
+  .loc-tooltip {
+    position: absolute; left: 0; top: calc(100% + 6px); z-index: 1000;
+    background: #252526; border: 1px solid #454545; border-radius: 6px;
+    padding: 8px 12px; font-size: 12px; white-space: nowrap;
+    display: none; opacity: 0; transition: opacity 0.15s;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4); gap: 8px; align-items: center;
+    pointer-events: auto;
+  }
+  .loc-tooltip.visible { display: inline-flex; opacity: 1; }
+  .loc-tooltip-path { color: var(--text); font-family: monospace; font-size: 11px; }
+  .loc-copy-btn {
+    padding: 2px 8px; border: 1px solid var(--border); border-radius: 3px;
+    background: var(--card); color: var(--blue); cursor: pointer;
+    font-size: 11px; transition: background 0.15s; white-space: nowrap;
+  }
+  .loc-copy-btn:hover { background: var(--card-hover); }
+  .loc-copy-btn.copied { color: var(--green); border-color: var(--green); }
+  .detail-btn {
+    padding: 1px 6px; margin-left: 6px; border: 1px solid var(--border); border-radius: 3px;
+    background: var(--card); color: var(--text-dim); cursor: pointer;
+    font-size: 10px; line-height: 1.4; transition: background 0.15s; vertical-align: middle;
+  }
+  .detail-btn:hover { background: var(--card-hover); color: var(--text); }
+  .detail-btn.active { color: var(--blue); border-color: var(--blue); }
 </style>
 </head>
 <body>
@@ -447,8 +519,8 @@ function getSearchResultHtml(query: string, items: SearchResultItem[], rawQuery:
       <td style="font-family:monospace;font-size:12px">${escapeHtml(item.fqn)}</td>
       <td><span class="tag-${item.source}">${item.source === 'src' ? '项目源码' : 'JAR 依赖'}</span></td>
       <td class="loc">${item.source === 'src'
-        ? `<a href="#" data-uri="${escapeHtml(item.uri)}" data-line="${item.line}">${escapeHtml(item.location)}</a><span class="line">:${item.line}</span>`
-        : `<span>${escapeHtml(item.location.substring(0, 80))}</span>`}</td>
+        ? `<span class="loc-cell"><a href="#" data-uri="${escapeHtml(item.uri)}" data-line="${item.line}">${escapeHtml(item.relPath)}</a><span class="line">:${item.line}</span><button class="detail-btn">详情</button><div class="loc-tooltip"><code class="loc-tooltip-path">${escapeHtml(item.location)}</code><span class="line">:${item.line}</span><button class="loc-copy-btn" data-copy="${escapeHtml(item.location)}:${item.line}">复制路径</button></div></span>`
+        : `<span class="loc-cell"><span class="loc-jar">${escapeHtml(item.location)}</span><button class="detail-btn">详情</button><div class="loc-tooltip"><code class="loc-tooltip-path">${escapeHtml(item.location)}</code><button class="loc-copy-btn" data-copy="${escapeHtml(item.location)}">复制路径</button></div></span>`}</td>
     </tr>`).join('')}
   </tbody>
 </table>
@@ -462,15 +534,16 @@ function getSearchResultHtml(query: string, items: SearchResultItem[], rawQuery:
   const filterSource = document.getElementById('filterSource');
   const filterText = document.getElementById('filterText');
   const countEl = document.getElementById('visibleCount');
-  const rows = document.querySelectorAll('#resultBody tr');
 
   function applyFilters() {
     const kind = filterKind.value;
     const source = filterSource.value;
     const text = filterText.value.toLowerCase();
+    const tbody = document.getElementById('resultBody');
+    const rows = tbody.querySelectorAll('tr');
     let visible = 0;
-    rows.forEach((row, i) => {
-      const item = items[i];
+    rows.forEach(row => {
+      const item = items[parseInt(row.dataset.idx)];
       const match = (kind === 'all' || item.kind === kind)
         && (source === 'all' || item.source === source)
         && (!text || item.fqn.toLowerCase().includes(text) || item.kind.toLowerCase().includes(text));
@@ -492,7 +565,8 @@ function getSearchResultHtml(query: string, items: SearchResultItem[], rawQuery:
       if (sortKey === key) sortAsc = !sortAsc;
       else { sortKey = key; sortAsc = true; }
       const tbody = document.getElementById('resultBody');
-      const sorted = [...rows].sort((a, b) => {
+      const rows = [...tbody.querySelectorAll('tr')];
+      const sorted = rows.sort((a, b) => {
         const ia = items[parseInt(a.dataset.idx)];
         const ib = items[parseInt(b.dataset.idx)];
         let va = ia[key], vb = ib[key];
@@ -511,13 +585,52 @@ function getSearchResultHtml(query: string, items: SearchResultItem[], rawQuery:
       acquireVsCodeApi().postMessage({ type: 'openFile', uri: a.dataset.uri, line: parseInt(a.dataset.line) });
     });
   });
+
+  // ── 路径详情切换（点击详情按钮展开/收起） ──
+  document.querySelectorAll('.loc-cell').forEach(cell => {
+    cell.addEventListener('click', (e) => e.stopPropagation());
+  });
+  document.querySelectorAll('.detail-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tooltip = btn.parentElement.querySelector('.loc-tooltip');
+      // 关闭其他 tooltip
+      document.querySelectorAll('.loc-tooltip.visible').forEach(t => {
+        if (t !== tooltip) t.classList.remove('visible');
+      });
+      document.querySelectorAll('.detail-btn.active').forEach(b => {
+        if (b !== btn) b.classList.remove('active');
+      });
+      tooltip.classList.toggle('visible');
+      btn.classList.toggle('active', tooltip.classList.contains('visible'));
+    });
+  });
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.loc-tooltip.visible').forEach(t => t.classList.remove('visible'));
+    document.querySelectorAll('.detail-btn.active').forEach(b => b.classList.remove('active'));
+  });
+
+  // ── 复制按钮 ──
+  document.querySelectorAll('.loc-copy-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(btn.dataset.copy).then(() => {
+        btn.textContent = '✓ 已复制';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = '复制路径';
+          btn.classList.remove('copied');
+        }, 1500);
+      });
+    });
+  });
 })();
 </script>
 </body>
 </html>`;
 }
 
-function getSourceResultHtml(fqn: string, filePath: string, source: string): string {
+function getSourceResultHtml(fqn: string, filePath: string, source: string, uri: string): string {
   const truncated = source.length > 10000;
   const body = truncated ? source.substring(0, 10000) : source;
   return /* html */`<!DOCTYPE html>
@@ -544,9 +657,19 @@ function getSourceResultHtml(fqn: string, filePath: string, source: string): str
 </head>
 <body>
 <h1>${escapeHtml(fqn)}</h1>
-<div class="path">${escapeHtml(filePath)}</div>
+<div class="path"><a href="#" data-uri="${escapeHtml(uri)}" data-line="1" style="color:var(--blue);text-decoration:none">${escapeHtml(filePath)}</a></div>
 <pre>${escapeHtml(body)}</pre>
 ${truncated ? '<div class="truncated">源码超过 10000 字符，已截断。</div>' : ''}
+<script>
+(function() {
+  document.querySelectorAll('a[data-uri]').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      acquireVsCodeApi().postMessage({ type: 'openFile', uri: a.dataset.uri, line: parseInt(a.dataset.line) });
+    });
+  });
+})();
+</script>
 </body>
 </html>`;
 }
@@ -624,8 +747,15 @@ function getTestHtml(): string {
 
 <div id="panelSource" style="display:none">
   <div class="field">
-    <label>全限定类名</label>
-    <input type="text" id="sourceFqn" placeholder="如 java.util.ArrayList" autocomplete="off">
+    <label>类名</label>
+    <input type="text" id="sourceFqn" placeholder="如 java.util.ArrayList, StringUtils" autocomplete="off">
+  </div>
+  <div class="field">
+    <label>匹配模式</label>
+    <select id="sourceMode">
+      <option value="strict">精确 (FQN)</option>
+      <option value="fuzzy">模糊</option>
+    </select>
   </div>
   <button class="btn-run" id="btnSource">&#9654; 获取源码</button>
 </div>
@@ -655,7 +785,7 @@ function getTestHtml(): string {
   document.getElementById('btnSource').addEventListener('click', () => {
     const fqn = document.getElementById('sourceFqn').value.trim();
     if (!fqn) return;
-    api.postMessage({ type: 'getSource', fqn });
+    api.postMessage({ type: 'getSource', fqn, fuzzy: document.getElementById('sourceMode').value === 'fuzzy' });
   });
   document.getElementById('sourceFqn').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') document.getElementById('btnSource').click();
