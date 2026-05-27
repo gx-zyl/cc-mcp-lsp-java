@@ -25,10 +25,36 @@
     "workspace"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onView:ccMcpLspJavaManagement",
+    "onCommand:cc-mcp-lsp-java.openManagement"
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ccMcpLspJavaSidebar",
+          "title": "CC MCP LSP Java",
+          "icon": "$(radio-tower)"
+        }
+      ]
+    },
+    "views": {
+      "ccMcpLspJavaSidebar": [
+        {
+          "type": "webview",
+          "id": "ccMcpLspJavaManagement",
+          "name": "管理面板"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "cc-mcp-lsp-java.openManagement",
+        "title": "CC MCP LSP Java: 打开管理面板"
+      }
+    ],
     "configuration": {
       "title": "CC MCP LSP Java",
       "properties": {

@@ -1,13 +1,14 @@
 /**
- * GX MCP LSP Java — VS Code Extension
+ * CC MCP LSP Java — VS Code Extension
  *
- * 启动内嵌 HTTP 服务器，通过 SSE 暴露 MCP 协议。
+ * 启动内嵌 HTTP 服务器，通过 Streamable HTTP 暴露 MCP 协议。
  * 使用 VS Code 内置 LSP API（executeWorkspaceSymbolProvider 等）调用 JDT.LS，
  * 不额外启动 JDT.LS 进程。
  */
 
 import * as vscode from 'vscode';
 import { startMcpServer, stopMcpServer } from './server.js';
+import { registerManagementView, openManagementPanel } from './panel.js';
 
 const LOG_TAG = '[cc-mcp-lsp-java]';
 let outputChannel: vscode.OutputChannel;
@@ -15,6 +16,16 @@ let outputChannel: vscode.OutputChannel;
 export function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel('CC MCP LSP Java');
   log('Extension activating...');
+
+  // 注册左侧活动栏侧边视图
+  registerManagementView(context, log);
+
+  // 注册编辑器标签页命令
+  context.subscriptions.push(
+    vscode.commands.registerCommand('cc-mcp-lsp-java.openManagement', () => {
+      openManagementPanel(context, log);
+    })
+  );
 
   // 注册配置变更监听
   context.subscriptions.push(

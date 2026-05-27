@@ -11,20 +11,76 @@
 import * as http from 'node:http';
 import * as vscode from 'vscode';
 import crypto from 'node:crypto';
+import * as os from 'node:os';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { registerTools } from './tools.js';
 
 let httpServer: http.Server | null = null;
+let currentPort = 38765;
+
+/** 服务器状态变更事件 */
+const _onDidChangeStatus = new vscode.EventEmitter<ServerInfo>();
+export const onDidChangeStatus = _onDidChangeStatus.event;
+
+export interface ConnectionRecord {
+  id: string;
+  startTime: number;
+  endTime?: number;
+}
+
+export interface ServerInfo {
+  running: boolean;
+  port: number;
+  host: string;
+  sessions: number;
+  connections: ConnectionRecord[];
+  restartHistory: string[];
+}
 
 /** sid → { transport } */
 const sessions = new Map<string, { transport: StreamableHTTPServerTransport }>();
+/** 连接历史 */
+const connectionHistory = new Map<string, ConnectionRecord>();
+/** 重启历史 */
+const restartHistory: string[] = [];
+
+function getHostIp(): string {
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    const iface = ifaces[name];
+    if (!iface) continue;
+    for (const info of iface) {
+      if (info.family === 'IPv4' && !info.internal) {
+        return info.address;
+      }
+    }
+  }
+  return '127.0.0.1';
+}
+
+function emitStatus() {
+  const info = getServerInfo();
+  _onDidChangeStatus.fire(info);
+}
+
+export function getServerInfo(): ServerInfo {
+  return {
+    running: httpServer !== null,
+    port: currentPort,
+    host: getHostIp(),
+    sessions: sessions.size,
+    connections: Array.from(connectionHistory.values()),
+    restartHistory: [...restartHistory],
+  };
+}
 
 export async function startMcpServer(
   context: vscode.ExtensionContext,
-  log: (msg: string) => void
+  log: (msg: string) => void,
+  portOverride?: number
 ): Promise<void> {
-  const port = vscode.workspace
+  currentPort = portOverride ?? vscode.workspace
     .getConfiguration('cc-mcp-lsp-java')
     .get<number>('port', 38765);
 
@@ -94,8 +150,15 @@ export async function startMcpServer(
         if (isNewSession && transport.sessionId) {
           const sid = transport.sessionId;
           sessions.set(sid, { transport });
-          transport.onclose = () => sessions.delete(sid);
+          connectionHistory.set(sid, { id: sid, startTime: Date.now() });
+          transport.onclose = () => {
+            sessions.delete(sid);
+            const rec = connectionHistory.get(sid);
+            if (rec) { rec.endTime = Date.now(); }
+            emitStatus();
+          };
           log(`Session established: ${sid.substring(0, 8)}...`);
+          emitStatus();
         }
       } catch (err) {
         log(`MCP error: ${err}`);
@@ -122,23 +185,26 @@ export async function startMcpServer(
   });
 
   return new Promise<void>((resolve) => {
-    httpServer!.listen(port, () => {
-      log(`MCP server ready at http://localhost:${port}/mcp (Streamable HTTP)`);
+    httpServer!.listen(currentPort, () => {
+      log(`MCP server ready at http://localhost:${currentPort}/mcp (Streamable HTTP)`);
       vscode.window.showInformationMessage(
-        `[CC MCP LSP Java] Server → http://localhost:${port}/mcp`
+        `[CC MCP LSP Java] Server → http://localhost:${currentPort}/mcp`
       );
+      restartHistory.push(`[${new Date().toLocaleString()}] Started on port ${currentPort}`);
       context.subscriptions.push({ dispose: () => stopMcpServer() });
+      emitStatus();
       resolve();
     });
 
     httpServer!.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
-        log(`Port ${port} in use. Change port in settings (cc-mcp-lsp-java.port).`);
-        vscode.window.showWarningMessage(`[CC MCP LSP Java] Port ${port} is in use.`);
+        log(`Port ${currentPort} in use. Change port in settings (cc-mcp-lsp-java.port).`);
+        vscode.window.showWarningMessage(`[CC MCP LSP Java] Port ${currentPort} is in use.`);
       } else {
         log(`Server error: ${err.message}`);
       }
       httpServer = null;
+      emitStatus();
       resolve();
     });
   });
@@ -151,7 +217,7 @@ export async function stopMcpServer(): Promise<void> {
   sessions.clear();
   if (httpServer) {
     return new Promise((resolve) => {
-      httpServer!.close(() => { httpServer = null; resolve(); });
+      httpServer!.close(() => { httpServer = null; emitStatus(); resolve(); });
     });
   }
 }
