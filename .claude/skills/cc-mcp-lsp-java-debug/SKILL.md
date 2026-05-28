@@ -29,7 +29,9 @@ code --extensionDevelopmentPath=D:\project\cc-mcp-lsp-java D:\project\cc-github-
 
 1. **触发 JDT.LS 索引** — 打开任意 `.java` 文件（如 `src/main/java/io/...`）
 2. 等待索引完成（右下角 redhat.java 状态变为 ✓）
-3. 打开调用图面板（左侧活动栏 → 调用图分析图标）
+3. **验证侧车状态** — 打开调用图面板，确认顶部状态为「已就绪」或「待扫描」
+   - 若显示「JAR 缺失」：`cd java-sidecar && mvn package -DskipTests`
+   - 若显示「启动超时」：检查端口 38766 是否被占用
 4. 点「扫描」→ 等待完成 → 浏览类结构 → 追溯调用关系
 
 ## 当前状态
