@@ -26,7 +26,7 @@ cd java-sidecar && mvn package -DskipTests
 - **Webview 端**：`src/webview/*` → Vite + React 19 → `dist-webview/`
   - 4 个独立入口：management / test / doc / result
   - 出口为自包含 HTML（`dist-webview/<name>/index.html`），asset 路径由扩展运行时自动转换
-- **Java 侧车**：`java-sidecar/**/*.java` → Maven → `java-sidecar/target/jacg-sidecar-0.1.0-jar-with-dependencies.jar`
+- **Java 侧车**：`java-sidecar/**/*.java` → Maven → `java-sidecar/target/jacg-sidecar-0.1.2-jar-with-dependencies.jar`
   - 扩展激活时通过 `jacg-bridge.ts` 以子进程方式启动
   - 提供 HTTP JSON-RPC（localhost:38766）供扩展查询调用图
 - 面板通过 `panel.ts` 中 `resolveWebviewHtml()` 读取并注入 webview
@@ -42,12 +42,13 @@ cd java-sidecar && mvn package -DskipTests
 ### java-all-call-graph 侧车
 
 - **用途**：字节码级方法调用图分析（谁调了谁）
-- **依赖**：`java-all-call-graph:4.0.6` + `java-callgraph2:4.0.4` + H2 + BCEL
-- **Maven**：`D:\apache-maven-3.9.16\apache-maven-3.9.16\bin\mvn.cmd`
+- **依赖**：`java-all-call-graph:4.0.9` + `java-callgraph2:4.0.6` + BCEL 6.12.0 + H2 + Gson
+- **Maven**：`D:\apache-maven-3.9.16\bin\mvn.cmd`
 - **源码**：Maven dependency-plugin 已配置自动下载 sources.jar
 - **数据库**：`~/.cc-mcp-lsp-java/jacg/jacg_db.h2.db`（H2 文件模式）
-- **阶段1**：解析 .class / JAR → 填充 H2。`skipWhenNotModified=true` 缓存
-- **阶段2**：查询调用图，内存模式返回 Java 对象，桥接层转 JSON
+- **阶段1**：解析 .class / JAR → 填充 H2。`skipWhenNotModified=false`（保证重扫完整）
+- **阶段2**：查询调用图，优先 JACG API（失败时 SQL 回退），桥接层转 JSON
+- **兼容性**：JACG 4.0.9 对 JDK 25 class 存在 NPE（`Cannot invoke getClass() because m is null`），侧车内置 SQL 直查回退绕过此缺陷
 - **MCP 工具**：`analyzeCallGraph { command: scan|callers|callees|list|status }`
 
 ### 项目结构

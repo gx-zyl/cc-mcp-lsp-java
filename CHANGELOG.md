@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1 (2026-05-28)
+
+- **JDK 25 兼容修复**: 侧车升级 JACG 4.0.6→4.0.9，覆盖 BCEL 6.10.0→6.12.0 支持 class file version 69
+- **SQL 直查回退**: JACG 4.0.9 对 JDK 25 类存在 NPE（`Cannot invoke getClass() because m is null`），新增 H2 SQL 回退路径绕过此缺陷
+  - JACG 查询抛异常时自动降级为 SQL
+  - 表位于 `jacg` schema 下，列名按双引号引用
+  - 支持 className/methodName 过滤
+- **异常处理加固**: `catch(Exception)` → `catch(Throwable)` 在 scan/query 处理中捕获 Error 类型
+- **可靠重扫**: `CKE_SKIP_WRITE_DB_WHEN_JAR_NOT_MODIFIED=false` 确保每次重扫完整解析
+- **侧车版本**: 0.1.0→0.1.2，Maven source/target 8→25
+- **skill 修复**: 新增 `skill.json` 触发清单，调试启动 skill 可被关键词自动触发
+- **文档修正**: CLAUDE.md Maven 路径修复、依赖版本更新
+
 ## 0.2.0 (2026-05-28)
 
 - **进程管理重构**: 引入 `SidecarStatusCode` 枚举替代简单 boolean，侧车状态透明化
