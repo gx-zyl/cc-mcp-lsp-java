@@ -4,3 +4,4 @@ java-sidecar/target/
 node_modules/
 jdtls/
 *.log
+*.vsix
