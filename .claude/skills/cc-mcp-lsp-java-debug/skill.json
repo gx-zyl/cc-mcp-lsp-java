@@ -1,0 +1,15 @@
+{
+  "name": "cc-mcp-lsp-java-debug",
+  "description": "CC MCP LSP Java — 调试启动：构建扩展、启动 Extension Dev Host、加载 AIProject 工作区",
+  "triggers": [
+    "启动调试",
+    "启动 vscode 调试",
+    "测试插件",
+    "F5",
+    "debug extension",
+    "run extension",
+    "启动测试",
+    "打开调试"
+  ],
+  "prompt": "启动 VS Code Extension Dev Host 调试 CC MCP LSP Java 插件"
+}

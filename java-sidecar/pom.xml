@@ -6,17 +6,24 @@
 
     <groupId>com.ccmcp</groupId>
     <artifactId>jacg-sidecar</artifactId>
-    <version>0.1.0</version>
+    <version>0.1.2</version>
     <packaging>jar</packaging>
 
     <properties>
-        <maven.compiler.source>8</maven.compiler.source>
-        <maven.compiler.target>8</maven.compiler.target>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <jacg.version>4.0.6</jacg.version>
+        <jacg.version>4.0.9</jacg.version>
+        <bcel.version>6.12.0</bcel.version>
     </properties>
 
     <dependencies>
+        <!-- 覆盖 java-callgraph2 传递的 BCEL 版本，JDK 25 需要 >= 6.11.0 -->
+        <dependency>
+            <groupId>org.apache.bcel</groupId>
+            <artifactId>bcel</artifactId>
+            <version>${bcel.version}</version>
+        </dependency>
         <dependency>
             <groupId>com.github.adrninistrator</groupId>
             <artifactId>java-all-call-graph</artifactId>

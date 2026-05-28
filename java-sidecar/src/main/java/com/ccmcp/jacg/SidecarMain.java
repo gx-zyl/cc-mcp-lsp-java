@@ -23,6 +23,7 @@ import java.io.*;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.sql.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -150,7 +151,7 @@ public class SidecarMain {
                 cg2Cw.setOtherConfigList(JavaCG2OtherConfigFileUseListEnum.OCFULE_JAR_DIR, new ArrayList<>(inputDirs));
             }
             ConfigureWrapper cw = new ConfigureWrapper(true);
-            cw.setMainConfig(ConfigKeyEnum.CKE_SKIP_WRITE_DB_WHEN_JAR_NOT_MODIFIED, "true");
+            cw.setMainConfig(ConfigKeyEnum.CKE_SKIP_WRITE_DB_WHEN_JAR_NOT_MODIFIED, "false");
             cw.setMainConfig(ConfigKeyEnum.CKE_APP_NAME, projectId);
             cw.setMainConfig(ConfigKeyEnum.CKE_OUTPUT_DIR_NAME, pOutDir + "/output");
             cw.setMainConfig(ConfigDbKeyEnum.CDKE_DB_USE_H2, Boolean.TRUE.toString());
@@ -169,7 +170,7 @@ public class SidecarMain {
                 emitProgress("error", "Scan failed");
                 error(ex, 500, "scan failed");
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             log("scan error: " + e);
             emitProgress("error", e.getMessage());
             error(ex, 500, e.getMessage());
@@ -216,27 +217,42 @@ public class SidecarMain {
         try {
             switch (cmd) {
                 case "callers": {
-                    RunnerGenAllGraph4Caller runner = new RunnerGenAllGraph4Caller(cw);
-                    runner.run();
-                    Map<String, List<MethodCallLineData4Er>> data = runner.getAllMethodCallLineData4ErMap();
-                    result.add("data", callerMapToJson(filterMap(data, keyFilter)));
+                    try {
+                        RunnerGenAllGraph4Caller runner = new RunnerGenAllGraph4Caller(cw);
+                        runner.run();
+                        Map<String, List<MethodCallLineData4Er>> data = runner.getAllMethodCallLineData4ErMap();
+                        result.add("data", callerMapToJson(filterMap(data, keyFilter)));
+                    } catch (Throwable e) {
+                        log("JACG caller query failed, fallback to SQL: " + e);
+                        result.add("data", queryCallersSql(pDbPath, projectId, filterClass, filterMethod));
+                    }
                     break;
                 }
                 case "callees": {
-                    RunnerGenAllGraph4Callee runner = new RunnerGenAllGraph4Callee(cw);
-                    runner.run();
-                    Map<String, List<MethodCallLineData4Ee>> data = runner.getAllMethodCallLineData4EeMap();
-                    result.add("data", calleeMapToJson(filterMap(data, keyFilter)));
+                    try {
+                        RunnerGenAllGraph4Callee runner = new RunnerGenAllGraph4Callee(cw);
+                        runner.run();
+                        Map<String, List<MethodCallLineData4Ee>> data = runner.getAllMethodCallLineData4EeMap();
+                        result.add("data", calleeMapToJson(filterMap(data, keyFilter)));
+                    } catch (Throwable e) {
+                        log("JACG callee query failed, fallback to SQL: " + e);
+                        result.add("data", queryCalleesSql(pDbPath, projectId, filterClass, filterMethod));
+                    }
                     break;
                 }
                 case "methodList": {
-                    // 注意：JACG API 不提供纯键查询，只能全量生成后取 keyset
-                    RunnerGenAllGraph4Caller runner = new RunnerGenAllGraph4Caller(cw);
-                    runner.run();
-                    Map<String, List<MethodCallLineData4Er>> all = runner.getAllMethodCallLineData4ErMap();
-                    JsonArray methods = new JsonArray();
-                    all.keySet().stream().filter(keyFilter).forEach(methods::add);
-                    result.add("methods", methods);
+                    try {
+                        // 注意：JACG API 不提供纯键查询，只能全量生成后取 keyset
+                        RunnerGenAllGraph4Caller runner = new RunnerGenAllGraph4Caller(cw);
+                        runner.run();
+                        Map<String, List<MethodCallLineData4Er>> all = runner.getAllMethodCallLineData4ErMap();
+                        JsonArray methods = new JsonArray();
+                        all.keySet().stream().filter(keyFilter).forEach(methods::add);
+                        result.add("methods", methods);
+                    } catch (Throwable e) {
+                        log("JACG methodList query failed, fallback to SQL: " + e);
+                        result.add("methods", queryMethodsSql(pDbPath, projectId, filterClass, filterMethod));
+                    }
                     break;
                 }
                 case "findPath": {
@@ -262,7 +278,7 @@ public class SidecarMain {
                     error(ex, 400, "unknown cmd: " + cmd); return;
             }
             ok(ex, GSON.toJson(result));
-        } catch (Exception e) {
+        } catch (Throwable e) {
             log("query error: " + e);
             error(ex, 500, e.getMessage());
         }
@@ -378,6 +394,120 @@ public class SidecarMain {
             }
             node.add("callers", callers);
             arr.add(node);
+        }
+        return arr;
+    }
+
+    /* ───────── SQL 回退查询（绕过 JACG 4.0.9 的 JDK 25 NPE 缺陷） ───────── */
+
+    /** 获取 H2 JDBC 连接，表在 jacg schema 下 */
+    private static Connection getH2Connection(String dbPath) throws SQLException {
+        try { Class.forName("org.h2.Driver"); } catch (ClassNotFoundException e) { throw new SQLException(e); }
+        Connection conn = DriverManager.getConnection("jdbc:h2:file:" + dbPath);
+        conn.setSchema("jacg");
+        return conn;
+    }
+
+    private static String q(String s) { return '"' + s + '"'; }
+
+    /** SQL 回退：查询方法列表 */
+    private static JsonArray queryMethodsSql(String dbPath, String projectId, String filterClass, String filterMethod) {
+        JsonArray arr = new JsonArray();
+        String table = q("jacg_method_info_" + projectId);
+        try (Connection conn = getH2Connection(dbPath);
+             Statement st = conn.createStatement()) {
+            StringBuilder sql = new StringBuilder("SELECT ").append(q("full_method"))
+                .append(" FROM ").append(table).append(" ORDER BY 1");
+            log("SQL fallback: " + sql);
+            try (ResultSet rs = st.executeQuery(sql.toString())) {
+                while (rs.next()) {
+                    String method = rs.getString(1);
+                    if (method == null) continue;
+                    if (!filterClass.isEmpty() && !method.startsWith(filterClass + ":")) continue;
+                    if (!filterMethod.isEmpty() && !method.split(":")[1].startsWith(filterMethod + "(")) continue;
+                    arr.add(method);
+                }
+            }
+        } catch (SQLException e) {
+            log("SQL methodList fallback error: " + e);
+        }
+        return arr;
+    }
+
+    /** SQL 回退：查询调用方 */
+    private static JsonArray queryCallersSql(String dbPath, String projectId, String filterClass, String filterMethod) {
+        JsonArray arr = new JsonArray();
+        String table = q("jacg_method_call_" + projectId);
+        try (Connection conn = getH2Connection(dbPath);
+             Statement st = conn.createStatement()) {
+            String sql = "SELECT " + q("caller_full_method") + "," + q("callee_full_method")
+                + " FROM " + table + " WHERE " + q("enabled") + "=1 ORDER BY " + q("caller_full_method");
+            log("SQL fallback: " + sql);
+            Map<String, List<String>> callerMap = new LinkedHashMap<>();
+            try (ResultSet rs = st.executeQuery(sql)) {
+                while (rs.next()) {
+                    String caller = rs.getString(1);
+                    String callee = rs.getString(2);
+                    if (caller == null) continue;
+                    if (!filterClass.isEmpty() && !caller.startsWith(filterClass + ":")) continue;
+                    if (!filterMethod.isEmpty() && !caller.contains(filterMethod + "(")) continue;
+                    callerMap.computeIfAbsent(caller, k -> new ArrayList<>());
+                    if (callee != null && !callerMap.get(caller).contains(callee)) {
+                        callerMap.get(caller).add(callee);
+                    }
+                }
+            }
+            int count = 0;
+            for (Map.Entry<String, List<String>> e : callerMap.entrySet()) {
+                if (count++ > 200) { arr.add("[truncated]"); break; }
+                JsonObject node = new JsonObject();
+                node.addProperty("caller", e.getKey());
+                JsonArray callees = new JsonArray();
+                for (String c : e.getValue()) callees.add(c);
+                node.add("callees", callees);
+                arr.add(node);
+            }
+        } catch (SQLException e) {
+            log("SQL callers fallback error: " + e);
+        }
+        return arr;
+    }
+
+    /** SQL 回退：查询被调用方 */
+    private static JsonArray queryCalleesSql(String dbPath, String projectId, String filterClass, String filterMethod) {
+        JsonArray arr = new JsonArray();
+        String table = q("jacg_method_call_" + projectId);
+        try (Connection conn = getH2Connection(dbPath);
+             Statement st = conn.createStatement()) {
+            String sql = "SELECT " + q("callee_full_method") + "," + q("caller_full_method")
+                + " FROM " + table + " WHERE " + q("enabled") + "=1 ORDER BY " + q("callee_full_method");
+            log("SQL fallback: " + sql);
+            Map<String, List<String>> calleeMap = new LinkedHashMap<>();
+            try (ResultSet rs = st.executeQuery(sql)) {
+                while (rs.next()) {
+                    String callee = rs.getString(1);
+                    String caller = rs.getString(2);
+                    if (callee == null) continue;
+                    if (!filterClass.isEmpty() && !callee.startsWith(filterClass + ":")) continue;
+                    if (!filterMethod.isEmpty() && !callee.contains(filterMethod + "(")) continue;
+                    calleeMap.computeIfAbsent(callee, k -> new ArrayList<>());
+                    if (caller != null && !calleeMap.get(callee).contains(caller)) {
+                        calleeMap.get(callee).add(caller);
+                    }
+                }
+            }
+            int count = 0;
+            for (Map.Entry<String, List<String>> e : calleeMap.entrySet()) {
+                if (count++ > 200) { arr.add("[truncated]"); break; }
+                JsonObject node = new JsonObject();
+                node.addProperty("callee", e.getKey());
+                JsonArray callers = new JsonArray();
+                for (String c : e.getValue()) callers.add(c);
+                node.add("callers", callers);
+                arr.add(node);
+            }
+        } catch (SQLException e) {
+            log("SQL callees fallback error: " + e);
         }
         return arr;
     }

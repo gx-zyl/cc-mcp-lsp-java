@@ -11,7 +11,7 @@ import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
 import * as vscode from 'vscode';
 
-const SIDECAR_JAR_REL = 'java-sidecar/target/jacg-sidecar-0.1.0-jar-with-dependencies.jar';
+const SIDECAR_JAR_REL = 'java-sidecar/target/jacg-sidecar-0.1.2-jar-with-dependencies.jar';
 const DEFAULT_PORT = 38766;
 const DEFAULT_DB_DIR = '.cc-mcp-lsp-java/jacg';
 
