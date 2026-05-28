@@ -8,7 +8,7 @@
 import * as vscode from 'vscode';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { getCallers, getCallees, listMethods, scan, getStatus, isSidecarRunning, discoverProjectClasspath, cleanProjectCache, cleanAllCache } from './jacg-bridge.js';
+import { getCallers, getCallees, listMethods, scan, getStatus, getDetailedStatus, isSidecarRunning, discoverProjectClasspath, cleanProjectCache, cleanAllCache } from './jacg-bridge.js';
 
 /* ───────── 符号种类名称映射 ───────── */
 
@@ -166,8 +166,23 @@ export function registerTools(server: McpServer, log: (msg: string) => void) {
     async ({ command, inputDir, className, methodName, keyword }) => {
       const filter = (className || methodName) ? { className, methodName } as const : undefined;
       if (!isSidecarRunning()) {
+        const ds = getDetailedStatus();
+        const structured = {
+          ok: false,
+          error: true,
+          reason: ds.status,
+          action: ds.status === 'jar_missing' ? 'cd java-sidecar && mvn package -DskipTests' : undefined,
+          detail: ds.status === 'jar_missing'
+            ? 'Java sidecar JAR not found. Build it first.'
+            : ds.status === 'timeout'
+              ? 'Sidecar start timed out. Check port 38766 and Java 17+ installation.'
+              : ds.status === 'crashed'
+                ? `Sidecar crashed after ${ds.restartCount} restart(s).`
+                : ds.detail || 'Sidecar not running.',
+          restartCount: ds.restartCount,
+        };
         return {
-          content: [{ type: 'text', text: 'Call-graph sidecar is not running. The Java sidecar process may have failed to start or is still initializing.' }],
+          content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }],
         };
       }
 
@@ -190,42 +205,56 @@ export function registerTools(server: McpServer, log: (msg: string) => void) {
               log(`Auto-discovered ${cp.compileOutput.length} compile dir(s) and ${cp.dependencyJars.length} dep jar(s)`);
             }
             const ok = await scan(dirs, log);
-            return {
-              content: [{ type: 'text', text: ok ? `Scan complete. Analyzed ${dirs.length} path(s).` : 'Scan failed. Check extension logs.' }],
-            };
+            if (!ok) {
+              return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: true, reason: 'scan_failed', detail: 'Scan failed. Check sidecar logs for details.' }, null, 2) }], isError: true };
+            }
+            return { content: [{ type: 'text', text: JSON.stringify({ ok: true, dirsAnalyzed: dirs.length, detail: 'Scan complete.' }, null, 2) }] };
           }
           case 'callers': {
             const nodes = await getCallers(filter);
             const filtered = keyword ? nodes.filter(n => n.method.includes(keyword)) : nodes;
-            const lines = formatCallGraph('Upward Callers (who calls this method)', filtered);
-            return { content: [{ type: 'text', text: lines }] };
+            return {
+              content: [{ type: 'text', text: JSON.stringify({ ok: true, command: 'callers', totalNodes: filtered.length, nodes: filtered }, null, 2) }],
+            };
           }
           case 'callees': {
             const nodes = await getCallees(filter);
             const filtered = keyword ? nodes.filter(n => n.method.includes(keyword)) : nodes;
-            const lines = formatCallGraph('Downward Callees (who this method calls)', filtered);
-            return { content: [{ type: 'text', text: lines }] };
+            return {
+              content: [{ type: 'text', text: JSON.stringify({ ok: true, command: 'callees', totalNodes: filtered.length, nodes: filtered }, null, 2) }],
+            };
           }
           case 'list': {
             const methods = await listMethods(filter);
             const filtered = keyword ? methods.filter(m => m.includes(keyword)) : methods;
             return {
-              content: [{ type: 'text', text: `${filtered.length} methods:\n${filtered.join('\n')}` }],
+              content: [{ type: 'text', text: JSON.stringify({ ok: true, command: 'list', totalMethods: filtered.length, methods: filtered }, null, 2) }],
             };
           }
           case 'status': {
             const s = await getStatus();
+            const ds = getDetailedStatus();
             return {
-              content: [{ type: 'text', text: `Sidecar status:\n  Scanned: ${s.scanned}\n  DB: ${s.dbDir}\n  Project ID: ${s.projectId}` }],
+              content: [{ type: 'text', text: JSON.stringify({
+                ok: true,
+                scanned: s.scanned,
+                dbDir: s.dbDir,
+                projectId: s.projectId,
+                inputDirCount: s.inputDirs.length,
+                dbFileSize: s.dbFileSize,
+                status: ds.status,
+                detail: ds.detail,
+                restartCount: ds.restartCount,
+              }, null, 2) }],
             };
           }
           case 'clean': {
             const ok = await cleanProjectCache(log);
-            return { content: [{ type: 'text', text: ok ? 'Project cache cleared. Run scan again to regenerate.' : 'Clean failed.' }] };
+            return { content: [{ type: 'text', text: JSON.stringify({ ok, detail: ok ? 'Project cache cleared. Run scan again.' : 'Clean failed.' }, null, 2) }] };
           }
           case 'clean-all': {
             const ok = await cleanAllCache(log);
-            return { content: [{ type: 'text', text: ok ? 'All project caches cleared.' : 'Clean-all failed.' }] };
+            return { content: [{ type: 'text', text: JSON.stringify({ ok, detail: ok ? 'All project caches cleared.' : 'Clean-all failed.' }, null, 2) }] };
           }
         }
       } catch (err) {
@@ -234,18 +263,6 @@ export function registerTools(server: McpServer, log: (msg: string) => void) {
       }
     }
   );
-}
-
-function formatCallGraph(title: string, nodes: { method: string; related: string[] }[]): string {
-  const lines: string[] = [`== ${title} ==`, `Total: ${nodes.length} nodes`, ''];
-  for (const n of nodes) {
-    lines.push(`  ${n.method}`);
-    for (const r of n.related) {
-      lines.push(`    → ${r}`);
-    }
-    lines.push('');
-  }
-  return lines.join('\n');
 }
 
 /* ───────── 查询实现 ───────── */

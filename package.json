@@ -3,7 +3,7 @@
   "displayName": "CC MCP LSP Java",
   "description": "MCP server for Java - connects to VS Code's existing JDT.LS via LSP API",
   "publisher": "gx-zyl",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/gx-zyl/cc-mcp-lsp-java.git"

@@ -19,6 +19,58 @@ let sidecarProcess: cp.ChildProcess | null = null;
 let sidecarPort = DEFAULT_PORT;
 let _activeProjectIndex = 0; // multi-root 支持
 
+/* ───────── 详细侧车状态（替代简单的 running boolean） ───────── */
+
+export type SidecarStatusCode =
+  | 'not_started'    // 还未尝试启动
+  | 'jar_missing'    // JAR 文件不存在
+  | 'starting'       // 进程已创建，健康检查中
+  | 'ready'          // 运行中且健康检查通过
+  | 'timeout'        // 启动超时，未在时限内就绪
+  | 'crashed'        // 非预期退出
+  | 'stopped'        // 主动停止
+  | 'error';         // 启动失败（如端口冲突）
+
+export interface SidecarDetailedStatus {
+  status: SidecarStatusCode;
+  detail: string;
+  running: boolean;
+  scanned: boolean;
+  restartCount: number;
+  dbDir: string;
+  projectId: string;
+  inputDirs: string[];
+  dbFileSize: number;
+}
+
+let _sidecarDetail: SidecarDetailedStatus = {
+  status: 'not_started',
+  detail: '侧车未启动',
+  running: false,
+  scanned: false,
+  restartCount: 0,
+  dbDir: '',
+  projectId: '',
+  inputDirs: [],
+  dbFileSize: 0,
+};
+
+let _restartCount = 0;
+const MAX_RESTARTS = 3;
+
+/**
+ * 设置详细状态并同步 running 字段。
+ */
+function setSidecarDetail(partial: Partial<SidecarDetailedStatus>) {
+  _sidecarDetail = {
+    ..._sidecarDetail,
+    ...partial,
+    running: partial.status === undefined
+      ? _sidecarDetail.running
+      : (partial.status === 'ready'),
+  };
+}
+
 /* ───────── 项目隔离：基于 workspace 路径哈希 ───────── */
 
 /**
@@ -33,6 +85,10 @@ export function getAvailableProjects(): { name: string; index: number }[] {
  */
 export function setActiveProject(index: number): void {
   _activeProjectIndex = Math.max(0, Math.min(index, (vscode.workspace.workspaceFolders?.length || 1) - 1));
+}
+
+export function getActiveProjectIndex(): number {
+  return _activeProjectIndex;
 }
 
 /**
@@ -167,23 +223,122 @@ export async function discoverProjectClasspath(
 
 /* ───────── 侧车生命周期 ───────── */
 
+let _healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+let _startTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+let _restartTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * 内部函数：执行一次进程创建 → health check → 超时/完成。
+ * resolve/reject 由 startSidecar 统一设置，跨重启复用同一个 Promise。
+ */
+function _doSpawn(
+  javaBin: string,
+  args: string[],
+  log: (msg: string) => void,
+  dbDir: string,
+  onReady: () => void,
+  onFailed: (reason: string) => void,
+) {
+  // 清理残存进程
+  if (sidecarProcess) {
+    sidecarProcess.kill();
+    sidecarProcess = null;
+  }
+  clearTimers();
+
+  sidecarProcess = cp.spawn(javaBin, args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    detached: false,
+  });
+
+  sidecarProcess.on('error', (err) => {
+    log(`[jacg] Failed to start sidecar: ${err.message}`);
+    sidecarProcess = null;
+    setSidecarDetail({ status: 'error', detail: `启动失败: ${err.message}` });
+    clearTimers();
+    onFailed(err.message);
+  });
+
+  let started = false;
+  _healthCheckTimer = setInterval(() => {
+    healthCheck()
+      .then((ok) => {
+        if (ok && !started) {
+          started = true;
+          clearTimers();
+          setSidecarDetail({ status: 'ready', detail: '侧车就绪', restartCount: _restartCount });
+          log('[jacg] Sidecar ready');
+          onReady();
+        }
+      })
+      .catch(() => {});
+  }, 500);
+
+  _startTimeoutTimer = setTimeout(() => {
+    clearTimers();
+    if (!started) {
+      log('[jacg] Sidecar start timeout (15s)');
+      setSidecarDetail({ status: 'timeout', detail: '侧车启动超时(15s)，请检查端口 38766 是否被占用或 Java 环境是否正确' });
+      onFailed('timeout after 15s');
+    }
+  }, 15000);
+
+  sidecarProcess.on('exit', (code) => {
+    log(`[jacg] Sidecar exited with code ${code}`);
+    sidecarProcess = null;
+    clearTimers();
+
+    if (_sidecarDetail.status === 'starting' || _sidecarDetail.status === 'ready' || _sidecarDetail.status === 'timeout') {
+      /* ── 暗坑 #3 修复：非预期退出时自动重启 ── */
+      if (_restartCount < MAX_RESTARTS) {
+        _restartCount++;
+        const delay = Math.min(1000 * Math.pow(2, _restartCount - 1), 8000);
+        log(`[jacg] Auto-restart attempt ${_restartCount}/${MAX_RESTARTS} in ${delay}ms`);
+        setSidecarDetail({ status: 'starting', detail: `侧车已退出(code=${code})，${_restartCount}/${MAX_RESTARTS} 次自动重启…` });
+        _restartTimer = setTimeout(() => _doSpawn(javaBin, args, log, dbDir, onReady, onFailed), delay);
+      } else {
+        log(`[jacg] Max restarts (${MAX_RESTARTS}) reached, giving up`);
+        setSidecarDetail({ status: 'crashed', detail: `侧车已退出(code=${code})，已自动重启 ${MAX_RESTARTS} 次均失败` });
+        vscode.window.showErrorMessage(`CC MCP LSP Java: 侧车进程崩溃，已自动重启 ${MAX_RESTARTS} 次失败。请检查日志。`);
+        onFailed(`exited ${MAX_RESTARTS} times`);
+      }
+    } else {
+      setSidecarDetail({ status: 'stopped', detail: `侧车已停止(code=${code})` });
+    }
+  });
+}
+
 export function startSidecar(
   context: vscode.ExtensionContext,
   log: (msg: string) => void,
   options?: { port?: number; dbDir?: string; javaHome?: string },
 ): Promise<void> {
-  if (sidecarProcess) {
+  if (sidecarProcess && _sidecarDetail.status === 'ready') {
     log('[jacg] Sidecar already running');
     return Promise.resolve();
+  }
+
+  // 进程残存但状态异常（如 crashed/timeout），先清理
+  if (sidecarProcess) {
+    log('[jacg] Cleaning up stale sidecar process before restart');
+    stopSidecar();
   }
 
   sidecarPort = options?.port ?? DEFAULT_PORT;
   const dbDir = options?.dbDir ?? path.join(context.globalStorageUri.fsPath, DEFAULT_DB_DIR);
   const sidecarJar = path.join(context.extensionPath, SIDECAR_JAR_REL);
 
+  /* ── 暗坑 #1 修复：JAR 不存在时弹窗提示，不静默跳过 ── */
   if (!fs.existsSync(sidecarJar)) {
-    log('[jacg] Sidecar JAR not found at ' + sidecarJar + '. Skipping call-graph features.');
-    return Promise.resolve();
+    const msg = `Java 侧车 JAR 不存在，调用图功能不可用。请在终端中构建：\ncd java-sidecar && mvn package -DskipTests`;
+    log('[jacg] ' + msg);
+    setSidecarDetail({ status: 'jar_missing', detail: msg, dbDir });
+    vscode.window.showWarningMessage('CC MCP LSP Java: ' + msg, '构建指南').then(selection => {
+      if (selection === '构建指南') {
+        vscode.env.openExternal(vscode.Uri.parse('https://github.com/gx-zyl/cc-mcp-lsp-java#java-%E4%BE%A7%E8%BD%A6%E8%B0%83%E7%94%A8%E5%9B%BE%E5%88%86%E6%9E%90'));
+      }
+    });
+    return Promise.reject(new Error(msg));
   }
 
   const javaBin = process.env.JAVA_HOME
@@ -197,46 +352,21 @@ export function startSidecar(
   ];
 
   log(`[jacg] Starting sidecar: ${javaBin} ${args.join(' ')}`);
+  setSidecarDetail({ status: 'starting', detail: '侧车启动中…', dbDir });
 
   return new Promise<void>((resolve, reject) => {
-    sidecarProcess = cp.spawn(javaBin, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      detached: false,
-    });
-
-    sidecarProcess.on('error', (err) => {
-      log(`[jacg] Failed to start sidecar: ${err.message}`);
-      sidecarProcess = null;
-      reject(err);
-    });
-
-    sidecarProcess.on('exit', (code) => {
-      log(`[jacg] Sidecar exited with code ${code}`);
-      sidecarProcess = null;
-    });
-
-    let started = false;
-    const check = setInterval(() => {
-      healthCheck()
-        .then((ok) => {
-          if (ok && !started) {
-            started = true;
-            clearInterval(check);
-            log('[jacg] Sidecar ready');
-            resolve();
-          }
-        })
-        .catch(() => {});
-    }, 500);
-
-    setTimeout(() => {
-      clearInterval(check);
-      if (!started) {
-        log('[jacg] Sidecar start timeout');
-        resolve(); // 不阻塞扩展启动
-      }
-    }, 15000);
+    _doSpawn(javaBin, args, log, dbDir,
+      () => { resolve(); },
+      (reason) => { reject(new Error(reason)); },
+    );
   });
+}
+
+/** 清理定时器，防止内存泄漏 */
+function clearTimers() {
+  if (_healthCheckTimer) { clearInterval(_healthCheckTimer); _healthCheckTimer = null; }
+  if (_startTimeoutTimer) { clearTimeout(_startTimeoutTimer); _startTimeoutTimer = null; }
+  if (_restartTimer) { clearTimeout(_restartTimer); _restartTimer = null; }
 }
 
 export function stopSidecar(): void {
@@ -244,10 +374,17 @@ export function stopSidecar(): void {
     sidecarProcess.kill();
     sidecarProcess = null;
   }
+  clearTimers();
+  _restartCount = 0;
+  setSidecarDetail({ status: 'stopped', detail: '侧车已主动停止', restartCount: 0 });
+}
+
+export function getDetailedStatus(): SidecarDetailedStatus {
+  return { ..._sidecarDetail };
 }
 
 export function isSidecarRunning(): boolean {
-  return sidecarProcess !== null && sidecarProcess.exitCode === null;
+  return _sidecarDetail.running;
 }
 
 /* ───────── HTTP 通信 ───────── */

@@ -1,46 +1,60 @@
 # CC MCP LSP Java
 
-VS Code 扩展 + MCP Server，连接 VS Code **已有的** JDT.LS。
+VS Code 扩展 + MCP Server，连接 VS Code **已有的** JDT.LS，并提供字节码级调用图分析。
 
 ## 架构
 
 ```
-MCP Client (Claude Desktop / Cursor)
+MCP Client (Claude Desktop / Cursor / etc.)
     │  POST /mcp (JSON-RPC 2.0, Streamable HTTP)
     ▼
 cc-mcp-lsp-java VS Code Extension  (http://localhost:38765)
-    │  vscode.commands.executeCommand()
-    ▼
-VS Code Extension Host → JDT.LS (redhat.java)
+    │                          │
+    │  vscode.commands         │  HTTP JSON-RPC (localhost:38766)
+    │  .executeCommand()       │
+    ▼                          ▼
+VS Code Extension Host ──→ JDT.LS (redhat.java)    Java Sidecar (java-all-call-graph)
+    │  类型搜索 / 源码获取                               │ 字节码解析 → H2 DB
+    └──────────────────────────────────────────────────┘ 调用图查询
 ```
 
-关键设计：
-- **不启动**第二个 JDT.LS 进程，复用 VS Code 已有的
-- 通过 `vscode.executeWorkspaceSymbolProvider` 等内置命令访问 JDT.LS
-- 使用 `@modelcontextprotocol/sdk` 的 `StreamableHTTPServerTransport`
-- 单端点 `POST /mcp`，MCP + JSON-RPC 2.0
-- 无 Express 依赖，使用原生 Node.js http
+两路数据源：
+- **LSP 查询**：通过 `vscode.executeWorkspaceSymbolProvider` 等内置命令访问 JDT.LS，用于类型搜索和源码获取
+- **调用图分析**：Java 侧车子进程（java-all-call-graph）解析编译后字节码，提供方法调用关系查询
 
 ## 前置要求
 
-- VS Code 1.85+
+- VS Code 1.120+
 - VS Code 扩展: `redhat.java`（提供 JDT.LS 支持）
-- JDK 17+（redhat.java 的依赖）
+- JDK 17+（redhat.java 及 Java 侧车的依赖）
+- Maven（仅构建 Java 侧车时需要）
 
 ## 安装
 
+### 扩展
+
 ```bash
 npm install
-npm run build
+npm run build          # vite build（webview）+ tsup（扩展端）
 ```
 
 VS Code 中按 `F5` 启动扩展开发模式，或打包：
 
 ```bash
-npm install -g @vscode/vsce
-vsce package
-code --install-extension cc-mcp-lsp-java-0.1.0.vsix
+npx @vscode/vsce package
+code --install-extension cc-mcp-lsp-java-0.2.0.vsix
 ```
+
+### Java 侧车（调用图分析）
+
+调用图分析依赖 Java 侧车，需先构建：
+
+```bash
+cd java-sidecar
+mvn package -DskipTests
+```
+
+侧车在扩展激活时自动以子进程方式启动，监听 `localhost:38766`。
 
 ### MCP 客户端配置
 
@@ -53,6 +67,18 @@ code --install-extension cc-mcp-lsp-java-0.1.0.vsix
   }
 }
 ```
+
+## VS Code 侧边栏面板
+
+扩展在活动栏注册了 5 个侧边视图：
+
+| 面板 | ID | 说明 |
+|------|----|------|
+| 管理面板 | `ccMcpLspJavaManagement` | 服务器状态、连接/重启历史 |
+| MCP 接口说明 | `ccMcpLspJavaDoc` | 完整 MCP 工具文档 |
+| Java 查询测试 | `ccMcpLspJavaTest` | 交互式测试搜索类型 / 获取源码 |
+| 调用图分析 | `ccMcpLspJavaCallGraph` | 侧车状态、扫描/查询/清理操作面板 |
+| 调用图 MCP 接口说明 | `ccMcpLspJavaCallGraphDoc` | analyzeCallGraph 工具文档 |
 
 ## VS Code 设置
 
@@ -68,16 +94,35 @@ code --install-extension cc-mcp-lsp-java-0.1.0.vsix
 搜索 Java 类型（类、接口、枚举），区分项目源码和 JAR 依赖。
 
 参数：
-- `name` (string) — 类型名称
-- `matchMode` ("strict" | "fuzzy", 默认 "strict") — 匹配模式
+- `name` (string) — 类型名称或部分名称
+- `matchMode` ("strict" | "fuzzy", 默认 "strict") — 匹配模式；fuzzy 模式下自动添加通配符
 
 ### getSourceCodeByFQN
 
 获取 Java 类型源码。
 
 参数：
-- `fullyQualifiedName` (string) — 全限定名
+- `fullyQualifiedName` (string) — 全限定名，如 `java.util.ArrayList` 或 `com.example.MyService`
 - `methodNames` (string[], 可选) — 只返回指定方法的源码
+
+### analyzeCallGraph
+
+方法调用图分析（需要 Java 侧车运行）。支持向上追溯调用者、向下展开被调方法、列出方法列表、触发扫描及清理缓存。
+
+参数：
+- `command` ("scan" | "callers" | "callees" | "list" | "status" | "clean" | "clean-all") — 操作命令
+  - `scan` — 自动发现 classpath 并扫描字节码
+  - `callers` — 查询谁调用了指定方法（向上追溯）
+  - `callees` — 查询指定方法调用了谁（向下展开）
+  - `list` — 列出已扫描的所有方法
+  - `status` — 侧车和扫描状态
+  - `clean` — 清除当前项目的 H2 缓存
+  - `clean-all` — 清除所有项目的 H2 缓存
+- `className` (string, 可选) — 按类名过滤
+- `methodName` (string, 可选) — 按方法名过滤
+- `keyword` (string, 可选) — 方法名包含关键词过滤
+
+首次使用需先执行 `scan`：自动通过 redhat.java 发现项目编译输出目录和依赖 JAR 路径，运行字节码解析并填充 H2 数据库。
 
 ## 协议规范
 
@@ -162,18 +207,44 @@ code --install-extension cc-mcp-lsp-java-0.1.0.vsix
 | 独立启动 JDT.LS | +500MB~1GB | 10-30s | 可能不同步 |
 | 复用 VS Code JDT.LS | 0 | 0 | 与编辑器一致 |
 
+### 为什么用侧车做调用图而非纯 LSP
+
+LSP 本身不提供方法调用图查询能力。调用图分析依赖字节码级别的全量扫描（java-all-call-graph），因此以独立 Java 侧车进程运行，通过 HTTP JSON-RPC 与扩展通讯，与 JDT.LS 的功能互补而非替代。
+
 ### 为什么自建 Transport 而非用 Express
 
 - Node.js 原生 `http` + SDK 的 `StreamableHTTPServerTransport` 已满足需求
 - 避免 Express 引入的额外依赖和体积
 - `StreamableHTTPServerTransport` 内部通过 `@hono/node-server` 自动转换 Node.js HTTP 到 Web API
 
+## 项目结构
+
+```
+cc-mcp-lsp-java/
+├── src/
+│   ├── extension.ts         # 插件入口
+│   ├── server.ts            # MCP HTTP 服务器
+│   ├── tools.ts             # MCP 工具（3 个工具）
+│   ├── panel.ts             # Webview 面板管理（5 个视图）
+│   └── jacg-bridge.ts       # Java 侧车桥接（进程管理 + HTTP 客户端）
+├── src/webview/             # React 19 + TypeScript 面板源码
+│   ├── management/          # 管理面板
+│   ├── doc/                 # MCP 接口说明
+│   ├── test/                # Java 查询测试
+│   ├── callgraph/           # 调用图分析
+│   ├── callgraph-doc/       # 调用图 MCP 接口说明
+│   └── shared/              # 共享 hooks / types / vscode-api
+├── java-sidecar/            # Java 侧车（Maven 项目）
+├── dist/                    # 扩展构建产物
+└── dist-webview/            # Webview 构建产物
+```
+
 ## 参考
 
-- [vsc-lsp-mcp](https://github.com/beixiyo/vsc-lsp-mcp) — VS Code Extension + MCP Streamable HTTP 的设计思路来源
 - [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/typescript-sdk) — MCP TypeScript SDK
 - [MCP Streamable HTTP Spec](https://spec.modelcontextprotocol.io/) — MCP 协议规范
-- [mcp-server-for-java](https://github.com/saikaNya/mcp-server-for-java) — 原始参考项目
+- [java-all-call-graph](https://github.com/gx-zyl/java-all-call-graph) — 调用图分析引擎
+- [vsc-lsp-mcp](https://github.com/beixiyo/vsc-lsp-mcp) — VS Code Extension + MCP Streamable HTTP 设计思路参考
 
 ## License
 

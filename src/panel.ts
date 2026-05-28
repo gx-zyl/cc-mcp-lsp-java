@@ -16,7 +16,7 @@ import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getServerInfo, onDidChangeStatus, startMcpServer, stopMcpServer } from './server.js';
-import { isSidecarRunning, getStatus, getCallers, getCallees, listMethods, scan as jacgScan, cleanProjectCache, discoverProjectClasspath, getAvailableProjects, setActiveProject } from './jacg-bridge.js';
+import { getStatus, getDetailedStatus, getCallers, getCallees, listMethods, scan as jacgScan, cleanProjectCache, discoverProjectClasspath, getAvailableProjects, setActiveProject, getActiveProjectIndex } from './jacg-bridge.js';
 
 /* ───────── 共享状态 ───────── */
 
@@ -515,7 +515,7 @@ class CallGraphProvider implements vscode.WebviewViewProvider {
           });
           break;
         case 'cleanSidecarCache':
-          handleSidecarClean(webviewView.webview);
+          handleSidecarClean(webviewView.webview, this.log);
           break;
         case 'openInEditor':
           openCallGraphPanel(this.context, this.log);
@@ -625,9 +625,10 @@ async function handleSidecarScan(webview: vscode.Webview | undefined, log?: (msg
   postSidecarStatus(webview);
 }
 
-async function handleSidecarClean(webview: vscode.Webview | undefined) {
+async function handleSidecarClean(webview: vscode.Webview | undefined, log?: (msg: string) => void) {
   if (!webview) return;
-  const ok = await cleanProjectCache(_log || (() => {}));
+  const logger = log || _log || (() => {});
+  const ok = await cleanProjectCache(logger);
   if (ok) { vscode.window.showInformationMessage('调用图缓存已清理'); }
   else { vscode.window.showErrorMessage('清理失败'); }
   postSidecarStatus(webview);
@@ -635,13 +636,13 @@ async function handleSidecarClean(webview: vscode.Webview | undefined) {
 
 /* ───────── 侧车状态推送 ───────── */
 
-const SIDECAR_STATUS_DEFAULT = { running: false, scanned: false, dbDir: '', projectId: '', inputDirs: [], dbFileSize: 0, classpathCount: 0, projects: [] };
+const SIDECAR_STATUS_DEFAULT = { running: false, scanned: false, dbDir: '', projectId: '', inputDirs: [], dbFileSize: 0, classpathCount: 0, projects: [], status: 'not_started', detail: '侧车未启动', restartCount: 0, activeProjectIndex: 0 };
 
 async function postSidecarStatus(webview: vscode.Webview | undefined) {
   if (!webview) return;
   try {
-    const running = isSidecarRunning();
-    if (running) {
+    const ds = getDetailedStatus();
+    if (ds.status === 'ready') {
       const s = await getStatus();
       webview.postMessage({ type: 'sidecarStatus', data: {
         running: true,
@@ -652,9 +653,19 @@ async function postSidecarStatus(webview: vscode.Webview | undefined) {
         dbFileSize: s.dbFileSize,
         classpathCount: s.inputDirs.length,
         projects: getAvailableProjects(),
+        status: ds.status,
+        detail: ds.detail,
+        restartCount: ds.restartCount,
+        activeProjectIndex: getActiveProjectIndex(),
       }});
     } else {
-      webview.postMessage({ type: 'sidecarStatus', data: SIDECAR_STATUS_DEFAULT });
+      webview.postMessage({ type: 'sidecarStatus', data: {
+        ...SIDECAR_STATUS_DEFAULT,
+        status: ds.status,
+        detail: ds.detail,
+        restartCount: ds.restartCount,
+        dbDir: ds.dbDir,
+      }});
     }
   } catch {
     webview.postMessage({ type: 'sidecarStatus', data: SIDECAR_STATUS_DEFAULT });

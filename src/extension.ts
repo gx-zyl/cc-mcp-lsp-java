@@ -9,30 +9,11 @@
 import * as vscode from 'vscode';
 import { startMcpServer, stopMcpServer } from './server.js';
 import { registerManagementView, registerDocView, registerTestView, registerCallGraphView, registerCallGraphDocView, openManagementPanel, openCallGraphPanel, openCallGraphDocPanel } from './panel.js';
-import { startSidecar, stopSidecar, isSidecarRunning, getStatus, cleanProjectCache, discoverProjectClasspath, scan as jacgScan } from './jacg-bridge.js';
+import { startSidecar, stopSidecar, cleanProjectCache, discoverProjectClasspath, scan as jacgScan } from './jacg-bridge.js';
 
 const LOG_TAG = '[cc-mcp-lsp-java]';
 let outputChannel: vscode.OutputChannel;
 let statusBarItem: vscode.StatusBarItem;
-
-/* ───────── 侧车状态事件（推送至管理面板等 UI） ───────── */
-
-export const _onDidChangeSidecarStatus = new vscode.EventEmitter<{ running: boolean; scanned: boolean; dbDir: string; projectId: string }>();
-export const onDidChangeSidecarStatus = _onDidChangeSidecarStatus.event;
-
-async function updateSidecarStatus() {
-  const running = isSidecarRunning();
-  if (running) {
-    try {
-      const s = await getStatus();
-      _onDidChangeSidecarStatus.fire({ running: true, scanned: s.scanned, dbDir: s.dbDir, projectId: s.projectId });
-    } catch {
-      _onDidChangeSidecarStatus.fire({ running: true, scanned: false, dbDir: '', projectId: '' });
-    }
-  } else {
-    _onDidChangeSidecarStatus.fire({ running: false, scanned: false, dbDir: '', projectId: '' });
-  }
-}
 
 export function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel('CC MCP LSP Java');
@@ -87,7 +68,9 @@ export function activate(context: vscode.ExtensionContext) {
   }
 
   // 启动 java-all-call-graph 侧车（后台，不阻塞）
-  startSidecar(context, log).then(() => updateSidecarStatus()).catch(() => log('Sidecar start failed (call-graph features unavailable)'));
+  startSidecar(context, log).then(() => log('Sidecar ready')).catch((err) => {
+    log('Sidecar start failed: ' + (err instanceof Error ? err.message : String(err)));
+  });
 
   // ── 状态栏图标 ──
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -96,10 +79,6 @@ export function activate(context: vscode.ExtensionContext) {
   statusBarItem.text = '$(radio-tower) MCP';
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
-
-  // 定时刷新侧车状态
-  const sidecarStatusTimer = setInterval(() => updateSidecarStatus(), 5000);
-  context.subscriptions.push({ dispose: () => clearInterval(sidecarStatusTimer) });
 
   // ── 侧车命令 ──
   context.subscriptions.push(
@@ -113,7 +92,6 @@ export function activate(context: vscode.ExtensionContext) {
         const ok = await jacgScan(dirs, log);
         if (ok) vscode.window.showInformationMessage('调用图扫描完成');
         else vscode.window.showErrorMessage('调用图扫描失败');
-        updateSidecarStatus();
       });
     })
   );
@@ -121,7 +99,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('cc-mcp-lsp-java.cleanCallGraph', async () => {
       const ok = await cleanProjectCache(log);
-      if (ok) { vscode.window.showInformationMessage('调用图缓存已清理'); updateSidecarStatus(); }
+      if (ok) { vscode.window.showInformationMessage('调用图缓存已清理'); }
       else vscode.window.showErrorMessage('清理失败');
     })
   );
