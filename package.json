@@ -3,7 +3,7 @@
   "displayName": "CC MCP LSP Java",
   "description": "MCP server for Java - connects to VS Code's existing JDT.LS via LSP API",
   "publisher": "gx-zyl",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/gx-zyl/cc-mcp-lsp-java.git"
@@ -109,6 +109,26 @@
           "type": "boolean",
           "default": true,
           "description": "Enable or disable the MCP server."
+        },
+        "cc-mcp-lsp-java.maxJars": {
+          "type": "number",
+          "default": 0,
+          "description": "Limit JAR/class file count for scan (0=unlimited, max 5000). Recommended for projects with 1000+ files."
+        },
+        "cc-mcp-lsp-java.scanTimeout": {
+          "type": "number",
+          "default": 600,
+          "description": "Scan timeout in seconds (default 600, 0=unlimited). Increase for large projects."
+        },
+        "cc-mcp-lsp-java.threads": {
+          "type": "number",
+          "default": 2,
+          "description": "JACG parallel processing threads (1-16, default 2). Higher values use more CPU but may increase H2 write contention."
+        },
+        "cc-mcp-lsp-java.queryTimeout": {
+          "type": "number",
+          "default": 60,
+          "description": "Query timeout in seconds (default 60, 0=unlimited)."
         }
       }
     }

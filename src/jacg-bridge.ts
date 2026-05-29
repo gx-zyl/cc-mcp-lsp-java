@@ -11,7 +11,7 @@ import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
 import * as vscode from 'vscode';
 
-const SIDECAR_JAR_REL = 'java-sidecar/target/jacg-sidecar-0.1.2-jar-with-dependencies.jar';
+const SIDECAR_JAR_REL = 'java-sidecar/target/jacg-sidecar-0.1.3-jar-with-dependencies.jar';
 const DEFAULT_PORT = 38766;
 const DEFAULT_DB_DIR = '.cc-mcp-lsp-java/jacg';
 
@@ -435,12 +435,18 @@ function queryBody(cmd: string, filter?: QueryFilter): Record<string, unknown> {
   return withProject({ cmd, ...(filter?.className ? { className: filter.className } : {}), ...(filter?.methodName ? { methodName: filter.methodName } : {}) });
 }
 
+export interface ScanOptions {
+  maxJars?: number;
+  scanTimeout?: number;
+  threads?: number;
+}
+
 /**
  * 阶段 1：扫描项目字节码 → 填充数据库。
  * inputDirs 可传多个目录（编译输出 + 依赖 JAR 目录）。
  * 扫描期间侧车 stdout 会输出 JSON 进度行，此处捕获并转发。
  */
-export async function scan(inputDirs: string[], log: (msg: string) => void): Promise<boolean> {
+export async function scan(inputDirs: string[], log: (msg: string) => void, options?: ScanOptions): Promise<boolean> {
   const projectId = getProjectId();
   log(`[jacg] Scanning ${inputDirs.length} dir(s) for project ${projectId || '(no workspace)'}`);
 
@@ -465,7 +471,11 @@ export async function scan(inputDirs: string[], log: (msg: string) => void): Pro
   }
 
   try {
-    const result = await post('/scan', withProject({ inputDirs })) as { ok?: boolean; error?: string };
+    const body: Record<string, unknown> = { inputDirs };
+    if (options?.maxJars) body.maxJars = options.maxJars;
+    if (options?.scanTimeout) body.scanTimeout = options.scanTimeout;
+    if (options?.threads) body.threads = options.threads;
+    const result = await post('/scan', withProject(body)) as { ok?: boolean; error?: string; status?: string; fileCount?: number; elapsedMs?: number };
     if (result.error) {
       log(`[jacg] Scan error: ${result.error}`);
       return false;

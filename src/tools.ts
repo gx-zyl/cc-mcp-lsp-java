@@ -162,8 +162,24 @@ export function registerTools(server: McpServer, log: (msg: string) => void) {
         .string()
         .optional()
         .describe('Filter method names containing this keyword (for callers/callees/list, combined with className/methodName).'),
+      maxJars: z
+        .number()
+        .optional()
+        .describe('FOR SCAN: limit number of JAR/class files to process (0=unlimited, max 5000).'),
+      scanTimeout: z
+        .number()
+        .optional()
+        .describe('FOR SCAN: timeout in seconds for the scan operation (default 600, 0=unlimited).'),
+      threads: z
+        .number()
+        .optional()
+        .describe('FOR SCAN: number of parallel threads for JACG processing (default 2, max 16).'),
+      queryTimeout: z
+        .number()
+        .optional()
+        .describe('FOR QUERY: timeout in seconds for query operations (default 60).'),
     },
-    async ({ command, inputDir, className, methodName, keyword }) => {
+    async ({ command, inputDir, className, methodName, keyword, maxJars, scanTimeout, threads, queryTimeout }) => {
       const filter = (className || methodName) ? { className, methodName } as const : undefined;
       if (!isSidecarRunning()) {
         const ds = getDetailedStatus();
@@ -204,7 +220,11 @@ export function registerTools(server: McpServer, log: (msg: string) => void) {
               dirs = [...cp.compileOutput, ...cp.dependencyJars];
               log(`Auto-discovered ${cp.compileOutput.length} compile dir(s) and ${cp.dependencyJars.length} dep jar(s)`);
             }
-            const ok = await scan(dirs, log);
+            const ok = await scan(dirs, log, {
+              maxJars: maxJars ?? undefined,
+              scanTimeout: scanTimeout ?? 600,
+              threads: threads ?? 2,
+            });
             if (!ok) {
               return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: true, reason: 'scan_failed', detail: 'Scan failed. Check sidecar logs for details.' }, null, 2) }], isError: true };
             }

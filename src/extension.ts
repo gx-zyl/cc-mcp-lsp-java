@@ -89,7 +89,9 @@ export function activate(context: vscode.ExtensionContext) {
       vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '正在扫描调用图...', cancellable: true }, async (progress, token) => {
         token.onCancellationRequested(() => log('[jacg] Scan cancelled by user'));
         progress.report({ message: '分析字节码中...' });
-        const ok = await jacgScan(dirs, log);
+        const ok = await jacgScan(dirs, log, {
+          scanTimeout: vscode.workspace.getConfiguration('cc-mcp-lsp-java').get<number>('scanTimeout', 600),
+        });
         if (ok) vscode.window.showInformationMessage('调用图扫描完成');
         else vscode.window.showErrorMessage('调用图扫描失败');
       });

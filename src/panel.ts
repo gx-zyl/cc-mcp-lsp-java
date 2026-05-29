@@ -619,7 +619,12 @@ async function handleSidecarScan(webview: vscode.Webview | undefined, log?: (msg
   const cp = await discoverProjectClasspath(logger);
   if (!cp) { vscode.window.showErrorMessage('无法自动发现 Classpath'); postSidecarStatus(webview); return; }
   const dirs = [...cp.compileOutput, ...cp.dependencyJars];
-  const ok = await jacgScan(dirs, logger);
+  const config = vscode.workspace.getConfiguration('cc-mcp-lsp-java');
+  const ok = await jacgScan(dirs, logger, {
+    maxJars: config.get<number>('maxJars', 0),
+    scanTimeout: config.get<number>('scanTimeout', 600),
+    threads: config.get<number>('threads', 2),
+  });
   if (ok) { vscode.window.showInformationMessage('调用图扫描完成'); }
   else { vscode.window.showErrorMessage('调用图扫描失败'); }
   postSidecarStatus(webview);
