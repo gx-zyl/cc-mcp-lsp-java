@@ -1,0 +1,12 @@
+{
+  "name": "h2-investigate",
+  "description": "查询 JACG H2 数据库 schema 和数据 — 表在 jacg schema 下，列名需双引号，表名小写",
+  "triggers": [
+    "查 H2",
+    "查数据库",
+    "h2 schema",
+    "看 H2 表",
+    "h2 数据"
+  ],
+  "prompt": "快速查询 JACG 侧车的 H2 数据库，查看表结构和数据"
+}
