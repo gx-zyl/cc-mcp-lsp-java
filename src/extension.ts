@@ -86,11 +86,11 @@ export function activate(context: vscode.ExtensionContext) {
       const cp = await discoverProjectClasspath(log);
       if (!cp) { vscode.window.showErrorMessage('无法自动发现 Classpath'); return; }
       const dirs = [...cp.compileOutput, ...cp.dependencyJars];
-      vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '正在扫描调用图...', cancellable: true }, async (progress, token) => {
-        token.onCancellationRequested(() => log('[jacg] Scan cancelled by user'));
-        progress.report({ message: '分析字节码中...' });
+      vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '正在扫描调用图...', cancellable: false }, async (progress) => {
+        progress.report({ message: '准备中…' });
         const ok = await jacgScan(dirs, log, {
           scanTimeout: vscode.workspace.getConfiguration('cc-mcp-lsp-java').get<number>('scanTimeout', 600),
+          onProgress: (msg) => progress.report({ message: msg }),
         });
         if (ok) vscode.window.showInformationMessage('调用图扫描完成');
         else vscode.window.showErrorMessage('调用图扫描失败');
@@ -121,3 +121,4 @@ function log(msg: string) {
   console.log(line);
   outputChannel?.appendLine(msg);
 }
+

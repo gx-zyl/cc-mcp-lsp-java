@@ -1,0 +1,38 @@
+server:
+  port: ${PORT:38766}
+
+spring:
+  application:
+    name: cc-jacg-sidecar
+  ai:
+    mcp:
+      server:
+        enabled: false   # 禁用 Spring AI 的 MCP transport（有死锁 bug）
+        name: cc-jacg-sidecar
+        version: 0.3.0
+        protocol: STREAMABLE
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.ccmcp: DEBUG
+    com.adrninistrator: INFO
+  file:
+    name: ${user.home}/.cc-mcp-lsp-java/sidecar.log
+
+# 自定义 JACG 侧车配置
+jacg:
+  db:
+    base-dir: ${user.home}/.cc-mcp-lsp-java/jacg
+  scan:
+    default-timeout: 600
+    max-threads: 2
+    max-jars: 3

@@ -16,7 +16,7 @@ import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getServerInfo, onDidChangeStatus, startMcpServer, stopMcpServer } from './server.js';
-import { getStatus, getDetailedStatus, getCallers, getCallees, listMethods, scan as jacgScan, cleanProjectCache, discoverProjectClasspath, getAvailableProjects, setActiveProject, getActiveProjectIndex } from './jacg-bridge.js';
+import { getStatus, getDetailedStatus, getCallers, getCallees, listMethods, scan as jacgScan, cleanProjectCache, discoverProjectClasspath, getAvailableProjects, setActiveProject, getActiveProjectIndex, setScanLogCallback, getScanLogs } from './jacg-bridge.js';
 
 /* ───────── 共享状态 ───────── */
 
@@ -507,9 +507,12 @@ class CallGraphProvider implements vscode.WebviewViewProvider {
         case 'requestSidecarStatus':
           postSidecarStatus(webviewView.webview);
           break;
+        case 'requestClasspath':
+          await handleRequestClasspath(webviewView.webview);
+          break;
         case 'startSidecarScan':
           postSidecarStatus(webviewView.webview);
-          handleSidecarScan(webviewView.webview, this.log).catch((err) => {
+          handleSidecarScan(webviewView.webview, this.log, msg.dirs as string[] | undefined).catch((err) => {
             this.log(`Sidecar scan error: ${err}`);
             postSidecarStatus(webviewView.webview);
           });
@@ -570,9 +573,12 @@ export function openCallGraphPanel(context: vscode.ExtensionContext, log: (msg: 
   const disposable = callGraphPanel.webview.onDidReceiveMessage(async (msg) => {
     switch (msg.type) {
       case 'requestSidecarStatus': postSidecarStatus(callGraphPanel?.webview); break;
+      case 'requestClasspath':
+        await handleRequestClasspath(callGraphPanel?.webview);
+        break;
       case 'startSidecarScan':
         postSidecarStatus(callGraphPanel?.webview);
-        await handleSidecarScan(callGraphPanel?.webview, log);
+        await handleSidecarScan(callGraphPanel?.webview, log, msg.dirs as string[] | undefined);
         break;
       case 'cleanSidecarCache': await handleSidecarClean(callGraphPanel?.webview, log); break;
       case 'switchProject':
@@ -610,24 +616,57 @@ export function openCallGraphPanel(context: vscode.ExtensionContext, log: (msg: 
 
 /* ───────── 侧车操作 ───────── */
 
-async function handleSidecarScan(webview: vscode.Webview | undefined, log?: (msg: string) => void) {
+// 单例 JACG 日志输出通道
+let _logChannel: vscode.OutputChannel | null = null;
+
+async function handleSidecarScan(webview: vscode.Webview | undefined, log?: (msg: string) => void, dirs?: string[]) {
   if (!webview) return;
+
+  // 复用日志通道
+  if (!_logChannel) _logChannel = vscode.window.createOutputChannel('JACG 扫描日志');
+  _logChannel.show(true);
+  _logChannel.appendLine('\n--- 新扫描 ---');
+  // 写入已有缓冲日志
+  for (const line of getScanLogs()) {
+    _logChannel.appendLine(line);
+  }
+  setScanLogCallback((line: string) => {
+    if (_logChannel) _logChannel.appendLine(line);
+  });
+
   const logger = (msg: string) => {
     if (log) log(msg);
     try { webview.postMessage({ type: 'sidecarProgress', message: msg }); } catch { /* webview disposed */ }
   };
-  const cp = await discoverProjectClasspath(logger);
-  if (!cp) { vscode.window.showErrorMessage('无法自动发现 Classpath'); postSidecarStatus(webview); return; }
-  const dirs = [...cp.compileOutput, ...cp.dependencyJars];
+
+  // 如果没有传 dirs，自动发现 classpath
+  if (!dirs || dirs.length === 0) {
+    const cp = await discoverProjectClasspath(logger);
+    if (!cp) {
+      vscode.window.showErrorMessage('无法自动发现 Classpath');
+      setScanLogCallback(null);
+      postSidecarStatus(webview);
+      return;
+    }
+    dirs = [...cp.compileOutput, ...cp.dependencyJars];
+  }
   const config = vscode.workspace.getConfiguration('cc-mcp-lsp-java');
   const ok = await jacgScan(dirs, logger, {
     maxJars: config.get<number>('maxJars', 0),
     scanTimeout: config.get<number>('scanTimeout', 600),
     threads: config.get<number>('threads', 2),
   });
+  setScanLogCallback(null);
   if (ok) { vscode.window.showInformationMessage('调用图扫描完成'); }
   else { vscode.window.showErrorMessage('调用图扫描失败'); }
   postSidecarStatus(webview);
+}
+
+async function handleRequestClasspath(webview: vscode.Webview | undefined) {
+  if (!webview) return;
+  const cp = await discoverProjectClasspath(() => {});
+  const all = cp ? [...cp.compileOutput, ...cp.dependencyJars] : [];
+  webview.postMessage({ type: 'classpathResult', dirs: all });
 }
 
 async function handleSidecarClean(webview: vscode.Webview | undefined, log?: (msg: string) => void) {

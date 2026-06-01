@@ -1,159 +1,238 @@
 import { useState } from 'react'
-import { useCallGraphState, fmtSize, type SidecarState } from './hooks/useCallGraphState'
-import { postMessage } from '../shared/hooks'
+import { useCallGraphState, statusLabel, statusColor, type SidecarState, type ChainData } from './hooks/useCallGraphState'
 
-/* ─── 状态横幅组件 ─── */
+/* ─── Header ─── */
 
-function StatusBanner({ state }: { state: SidecarState }) {
+function Header({ scanning, onScan, onRefresh }: { scanning: boolean; onScan: () => void; onRefresh: () => void }) {
   return (
-    <div className={`status-banner ${state.status}`}>
-      {state.status === 'jar_missing' && <span>⚠ Java 侧车 JAR 未构建。终端执行：<code>cd java-sidecar && mvn package -DskipTests</code></span>}
-      {state.status === 'timeout' && <span>⏱ 侧车启动超时：{state.detail}</span>}
-      {state.status === 'crashed' && <span>💥 侧车已崩溃（重启 {state.restartCount} 次后失败）：{state.detail}</span>}
-      {state.status === 'starting' && <span>⟳ 侧车启动中…</span>}
-      {state.status === 'error' && <span>✕ {state.detail}</span>}
-      {state.status === 'stopped' && state.restartCount > 0 && <span>⏹ 侧车已停止（已自动重启 {state.restartCount} 次）</span>}
-      {state.status === 'not_started' && <span>侧车尚未启动。等待扩展激活…</span>}
-      {state.status === 'stopped' && state.restartCount === 0 && <span>侧车已停止。点击<b>扫描</b>重新开始分析</span>}
+    <div className="cg-header">
+      <span className="cg-title">调用图分析</span>
+      <div className="cg-header-actions">
+        <button className="cg-btn cg-btn-primary" disabled={scanning} onClick={onScan}>{scanning ? '扫描中…' : '▶ 扫描'}</button>
+        <button className="cg-btn" disabled={scanning} onClick={onRefresh} title="刷新状态">↻</button>
+      </div>
     </div>
   )
 }
 
-/* ─── Badge 栏组件 ─── */
+/* ─── Summary ─── */
 
-function BadgeBar({ state, totalMethods }: { state: SidecarState; totalMethods: number }) {
-  const metaColor = (s: string) => {
-    if (s === 'ready') return 'var(--green)'
-    if (s === 'starting') return 'var(--orange)'
-    return 'var(--red)'
-  }
+function Summary({ state, totalMethods, scanning, loaded }: { state: SidecarState; totalMethods: number; scanning: boolean; loaded: boolean }) {
+  const dot = statusColor(state)
+  const label = statusLabel(state)
+  const stats = state.scanned ? ` · ${totalMethods.toLocaleString()} 方法` : ''
+  const scanMsg = scanning ? '扫描中…' : !loaded ? '点击扫描开始分析' : ''
+
   return (
-    <div className="badge-bar">
-      <span className="badge-item" title={state.detail}>
-        <span className="badge-dot" style={{ background: metaColor(state.status) }} />
-        {state.status === 'ready'
-          ? (state.scanned ? `已分析 ${totalMethods.toLocaleString()} 方法` : '待扫描')
-          : state.status === 'starting' ? '启动中…'
-          : state.status === 'jar_missing' ? 'JAR 缺失'
-          : state.status === 'timeout' ? '启动超时'
-          : state.status === 'crashed' ? '已崩溃'
-          : state.status === 'error' ? '启动失败'
-          : '未启动'}
-      </span>
-      {state.scanned && (
-        <span className="badge-item" title={`数据库路径: ${state.dbDir}`}>
-          📦 {state.dbFileSize > 0 ? fmtSize(state.dbFileSize) : '< 1 KB'}
-        </span>
-      )}
-      {state.status === 'ready' && (
-        <span className="badge-item" title={`端口 38766`}>
-          🔌 {state.projects.length > 1 ? `${state.projects.length} 项目` : state.projectId ? `#${state.projectId.slice(0, 6)}` : '单项目'}
-        </span>
-      )}
-      {state.projects.length > 1 && (
-        <select className="badge-select" value={state.activeProjectIndex} onChange={e => postMessage({ type: 'switchProject', index: Number(e.target.value) })}>
-          {state.projects.map(p => <option key={p.index} value={p.index}>{p.name}</option>)}
-        </select>
-      )}
+    <div className="cg-summary">
+      <span className="cg-dot" style={{ background: dot }} title={state.detail} />
+      <span className="cg-status">{label}</span>
+      <span className="cg-stats">{stats}</span>
+      {scanMsg && <span className="cg-scan-msg">{scanMsg}</span>}
     </div>
   )
 }
 
-/* ─── 类树浏览 ─── */
+/* ─── Filter ─── */
 
-function ClassBrowser({
-  classTree, expandedClasses, classFilter, totalMethods,
-  onToggleClass, onQuickQuery, onFilterChange,
+function Filter({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled: boolean }) {
+  return (
+    <div className="cg-filter">
+      <span className="cg-filter-icon">🔍</span>
+      <input
+        className="cg-filter-input"
+        type="text"
+        placeholder="搜索类或方法…"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        disabled={disabled}
+      />
+      {value && <span className="cg-filter-clear" onClick={() => onChange('')}>✕</span>}
+    </div>
+  )
+}
+
+/* ─── Class Tree ─── */
+
+function ClassTree({
+  tree, filter, expandedClasses, expandedMethods,
+  onToggleClass, onToggleMethod, getChain,
 }: {
-  classTree: Map<string, { method: string; full: string }[]>
+  tree: Map<string, { method: string; full: string }[]>
+  filter: string
   expandedClasses: Set<string>
-  classFilter: string
-  totalMethods: number
+  expandedMethods: Set<string>
   onToggleClass: (cls: string) => void
-  onQuickQuery: (full: string, tp: 'callers' | 'callees') => void
-  onFilterChange: (f: string) => void
+  onToggleMethod: (full: string) => void
+  getChain: (full: string, type: 'callers' | 'callees') => ChainData | null
 }) {
-  const filtered = classFilter
-    ? Array.from(classTree.entries()).filter(([cls]) => cls.toLowerCase().includes(classFilter.toLowerCase()))
-    : Array.from(classTree.entries())
+  const entries = filter
+    ? Array.from(tree.entries()).filter(([cls, methods]) =>
+        cls.toLowerCase().includes(filter.toLowerCase()) ||
+        methods.some(m => m.method.toLowerCase().includes(filter.toLowerCase()))
+      )
+    : Array.from(tree.entries())
+
+  if (entries.length === 0) {
+    return <div className="cg-empty">{filter ? '无匹配结果' : '暂无数据'}</div>
+  }
 
   return (
-    <div className="tab-content">
-      <div className="browser-header">
-        <span className="section-label">类结构浏览</span>
-        <span className="count">{classTree.size} 类 · {totalMethods.toLocaleString()} 方法</span>
-      </div>
-      <div className="browser-filter">
-        <input type="text" placeholder="过滤类名…" value={classFilter} onChange={e => onFilterChange(e.target.value)} />
-      </div>
-      {filtered.length === 0
-        ? <div className="empty">无匹配类名</div>
-        : filtered.map(([cls, methods]) => (
-            <div key={cls} className="class-node">
-              <div className="class-name" onClick={() => onToggleClass(cls)}>
-                <span className={`arrow ${expandedClasses.has(cls) ? 'expanded' : ''}`}>▶</span>
-                <span className="class-label">{cls}</span>
-                <span className="count">{methods.length} 方法</span>
-              </div>
-              {expandedClasses.has(cls) && (
-                <div className="class-methods">
-                  {methods.map((m, i) => (
-                    <div key={i} className="method-item">
-                      <span className="method-name" onClick={() => onQuickQuery(m.full, 'callers')} title="查谁调了它">↑ {m.method}</span>
-                      <span className="method-name callee" onClick={() => onQuickQuery(m.full, 'callees')} title="查它调了谁">↓ {m.method}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+    <div className="cg-tree">
+      {entries.map(([cls, methods]) => (
+        <div key={cls} className="cg-class">
+          <div className="cg-class-name" onClick={() => onToggleClass(cls)}>
+            <span className={`cg-arrow ${expandedClasses.has(cls) ? 'expanded' : ''}`}>▶</span>
+            <span>{cls}</span>
+            <span className="cg-count">{methods.length}</span>
+          </div>
+          {expandedClasses.has(cls) && (
+            <div className="cg-methods">
+              {methods.filter(m => !filter || m.method.toLowerCase().includes(filter.toLowerCase())).map((m, i) => (
+                <MethodNode
+                  key={i}
+                  entry={m}
+                  expanded={expandedMethods.has(m.full)}
+                  onToggle={() => onToggleMethod(m.full)}
+                  getChain={getChain}
+                />
+              ))}
             </div>
-          ))
-      }
+          )}
+        </div>
+      ))}
     </div>
   )
 }
 
-/* ─── 查询结果 ─── */
+/* ─── Method Node ─── */
 
-function QueryResult({
-  result, busy, onQuickQuery, maxItems,
+function MethodNode({
+  entry, expanded, onToggle, getChain,
 }: {
-  result: { type: string; data: { method: string; related: string[] }[] } | null
-  busy: boolean
-  onQuickQuery: (full: string, tp: 'callers' | 'callees') => void
-  maxItems?: number
+  entry: { method: string; full: string }
+  expanded: boolean
+  onToggle: () => void
+  getChain: (full: string, type: 'callers' | 'callees') => ChainData | null
 }) {
-  if (busy) return <div className="tab-content"><div className="empty">查询中…</div></div>
-  if (!result) return <div className="tab-content"><div className="empty">展开类树点击方法旁的 ↑↓ 追溯调用关系</div></div>
+  const callers = getChain(entry.full, 'callers')
+  const callees = getChain(entry.full, 'callees')
+  const loading = expanded && !callers && !callees
 
-  const items = maxItems ? result.data.slice(0, maxItems) : result.data
   return (
-    <div className="tab-content">
-      <div className="browser-header">
-        <span className="section-label">{result.type === 'callers' ? '↑ 调用方' : '↓ 被调用方'}</span>
-        <span className="count">{result.data.length} 条结果</span>
+    <div className="cg-method">
+      <div className="cg-method-name" onClick={onToggle}>
+        <span className={`cg-arrow-sm ${expanded ? 'expanded' : ''}`}>▶</span>
+        <span className="cg-method-label">{entry.method}</span>
+        {expanded && callers && <span className="cg-chain-count">↑{callers.items.length}</span>}
+        {expanded && callees && <span className="cg-chain-count">↓{callees.items.length}</span>}
       </div>
-      {result.data.length === 0
-        ? <div className="empty">无匹配结果</div>
-        : items.map((n, i) => (
-            <div key={i} className="method-node">
-              <div className="method-name-root">
-                <span className="method-label">{n.method}</span>
-                <span className="method-actions">
-                  <span className="action-btn" onClick={e => { e.stopPropagation(); onQuickQuery(n.method, 'callers') }} title="查谁调了它">↑</span>
-                  <span className="action-btn" onClick={e => { e.stopPropagation(); onQuickQuery(n.method, 'callees') }} title="查它调了谁">↓</span>
-                </span>
-              </div>
-              {n.related.length > 0 && (
-                <div className="method-related">
-                  {n.related.map((r, j) => (
-                    <div key={j} className="method-call" onClick={() => onQuickQuery(r, result.type === 'callers' ? 'callers' : 'callees')}>{r}</div>
-                  ))}
+      {expanded && (
+        <div className="cg-chain">
+          {loading && <div className="cg-chain-loading">查询中…</div>}
+          {callers && callers.items.length > 0 && (
+            <div className="cg-chain-group">
+              <div className="cg-chain-label">↑ 调用方</div>
+              {callers.items.slice(0, 10).map((item, i) => (
+                <div key={i} className="cg-chain-item" title={item.method}>
+                  <span className="cg-chain-caller">{shortMethod(item.method)}</span>
+                  {item.related.length > 0 && <span className="cg-chain-path">→ {item.related.length}</span>}
                 </div>
-              )}
+              ))}
+              {callers.items.length > 10 && <div className="cg-chain-more">… 还有 {callers.items.length - 10} 条</div>}
             </div>
-          ))
-      }
-      {maxItems && result.data.length > maxItems && <div className="empty">… 仅显示前 {maxItems} 条</div>}
+          )}
+          {callees && callees.items.length > 0 && (
+            <div className="cg-chain-group">
+              <div className="cg-chain-label">↓ 被调用方</div>
+              {callees.items.slice(0, 10).map((item, i) => (
+                <div key={i} className="cg-chain-item" title={item.method}>
+                  <span className="cg-chain-callee">{shortMethod(item.method)}</span>
+                  {item.related.length > 0 && <span className="cg-chain-path">→ {item.related.length}</span>}
+                </div>
+              ))}
+              {callees.items.length > 10 && <div className="cg-chain-more">… 还有 {callees.items.length - 10} 条</div>}
+            </div>
+          )}
+          {callers && callees && callers.items.length === 0 && callees.items.length === 0 && (
+            <div className="cg-chain-empty">无上下游调用</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function shortMethod(full: string): string {
+  const ci = full.indexOf(':')
+  return ci > 0 ? full.slice(ci + 1) : full
+}
+
+/* ─── Main ─── */
+
+/* ─── JAR 选择对话框 ─── */
+
+const PAGE_SIZE = 50
+
+function JarPicker({
+  dirs, selected, filter, onToggle, onFilter, onConfirm, onCancel, onRefresh,
+}: {
+  dirs: string[]; selected: Set<number>; filter: string;
+  onToggle: (i: number) => void; onFilter: (v: string) => void;
+  onConfirm: () => void; onCancel: () => void;
+  onRefresh?: () => void;
+}) {
+  const [page, setPage] = useState(0)
+  const filtered = filter
+    ? dirs.map((d, i) => ({ d, i })).filter(x => x.d.toLowerCase().includes(filter.toLowerCase()))
+    : dirs.map((d, i) => ({ d, i }))
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE)
+  const pageItems = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+
+  return (
+    <div className="cg-overlay" onClick={onCancel}>
+      <div className="cg-picker" onClick={e => e.stopPropagation()}>
+        <div className="cg-picker-header">选择要扫描的 JAR（最多 3 个）</div>
+        {dirs.length === 0 ? (
+          <div className="cg-picker-loading">
+            <p>正在获取项目 JAR 列表…</p>
+            <button className="cg-btn" onClick={onRefresh} style={{ marginTop: 12 }}>🔄 重新查询</button>
+          </div>
+        ) : (
+          <>
+            <div className="cg-picker-search">
+              <input type="text" placeholder="🔍 搜索 JAR 文件名…" value={filter}
+                onChange={e => { onFilter(e.target.value); setPage(0) }} autoFocus />
+            </div>
+            <div className="cg-picker-list">
+              {pageItems.map(({ d, i }) => (
+                <label key={i} className={`cg-picker-item ${selected.has(i) ? 'checked' : ''}`}>
+                  <input type="checkbox" checked={selected.has(i)}
+                    onChange={() => onToggle(i)}
+                    disabled={!selected.has(i) && selected.size >= 3} />
+                  <span className="cg-picker-name">{d.replace(/.*[\\/]/, '')}</span>
+                  <span className="cg-picker-path">{d}</span>
+                </label>
+              ))}
+            </div>
+            {totalPages > 1 && (
+              <div className="cg-picker-pager">
+                <button className="cg-btn" disabled={page <= 0} onClick={() => setPage(page - 1)}>◀ 上一页</button>
+                <span className="cg-pager-info">{page + 1}/{totalPages} 页 · {filtered.length} 项</span>
+                <button className="cg-btn" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>下一页 ▶</button>
+              </div>
+            )}
+            <div className="cg-picker-footer">
+              <span className="cg-picker-count">{selected.size}/3 已选</span>
+              <div className="cg-picker-actions">
+                <button className="cg-btn" onClick={onCancel}>取消</button>
+                <button className="cg-btn cg-btn-primary" disabled={selected.size === 0}
+                  onClick={onConfirm}>开始扫描</button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }
@@ -162,125 +241,51 @@ function QueryResult({
 
 export default function CallGraphPanel() {
   const h = useCallGraphState()
-  const [activeTab, setActiveTab] = useState<'browser' | 'trace'>('browser')
 
   return (
-    <div className="app">
-      {/* ── Header ── */}
-      <div className="header">
-        <span className={`status-dot ${h.sm.cls}`} title={h.state.detail} />
-        <h1>调用图分析</h1>
-        <span className={`status-badge ${h.state.status}`}>{h.sm.label}</span>
-      </div>
+    <div className="cg-app">
+      {h.showPicker && (
+        <JarPicker
+          dirs={h.availableDirs}
+          selected={h.selectedDirs}
+          filter={h.jarFilter}
+          onToggle={h.toggleJar}
+          onFilter={h.setJarFilter}
+          onConfirm={h.confirmScan}
+          onCancel={() => h.setShowPicker(false)}
+          onRefresh={h.doScan}
+        />
+      )}
+      <Header scanning={h.scanning} onScan={h.doScan} onRefresh={h.doRefresh} />
 
-      {/* ── 状态横幅 ── */}
-      {h.state.status !== 'ready' && <StatusBanner state={h.state} />}
-
-      {/* ── Badge 栏 ── */}
-      <BadgeBar state={h.state} totalMethods={h.totalMethods} />
-
-      {/* ── 数据管理 ── */}
-      <div className="actions-bar">
-        <button className="btn primary" disabled={h.state.status !== 'ready' || h.busy} onClick={h.doScan}>扫描</button>
-        <button className="btn danger" disabled={h.state.status !== 'ready' || h.busy} onClick={h.doClean}>清理</button>
-        <button className="btn" disabled={h.busy} onClick={() => postMessage({ type: 'requestSidecarStatus' })}>刷新</button>
-        {h.state.scanned && (
-          <button className="btn" disabled={h.busy} onClick={() => { postMessage({ type: 'sidecarQuery', queryType: 'list', query: '' }); h.setShowBrowser(true); h.setClassFilter('') }}>浏览类结构</button>
-        )}
-        {h.isSidebar && (
-          <button className="btn" onClick={h.openInEditor}>打开编辑器版</button>
-        )}
-      </div>
-
-      {/* ── 扫描进度 ── */}
-      {h.busy && h.phase !== 'idle' && (
-        <>
-          <div className="progress-track"><div className="progress-fill" style={{ width: `${h.phase === 'preparing' ? 15 : h.phase === 'scanning' ? 55 : 100}%` }} /><span className="progress-label">{h.phase === 'preparing' ? '15' : h.phase === 'scanning' ? '55' : '100'}%</span></div>
-          {h.progress && <div className="progress-text-inline">{h.progress}</div>}
-        </>
+      {h.state.status !== 'not_started' && (
+        <Summary state={h.state} totalMethods={h.totalMethods} scanning={h.scanning} loaded={h.loaded} />
       )}
 
-      {/* ── Tabs: 类树浏览 / 调用链追溯 ── */}
-      {(h.showBrowser || h.hasResult) && (
-        <div className="tabs">
-          <button className={`tab ${activeTab === 'browser' ? 'active' : ''}`} onClick={() => setActiveTab('browser')} disabled={!h.showBrowser}>
-            类树浏览
-          </button>
-          <button className={`tab ${activeTab === 'trace' ? 'active' : ''}`} onClick={() => setActiveTab('trace')} disabled={!h.hasResult}>
-            调用链追溯
-            {h.hasResult && <span className="tab-count">{h.result!.data.length}</span>}
-          </button>
+      {h.loaded && (
+        <Filter value={h.searchFilter} onChange={h.setSearchFilter} disabled={!h.loaded} />
+      )}
+
+      {h.scanning && !h.loaded && (
+        <div className="cg-scanning">
+          <div className="cg-spinner"></div>
+          <span>{h.progressMsg || '正在扫描…'}</span>
         </div>
       )}
 
-      {/* ── Tab 内容 ── */}
-      {activeTab === 'browser' && h.showBrowser && (
-        <ClassBrowser
-          classTree={h.classTree}
+      {h.loaded ? (
+        <ClassTree
+          tree={h.filteredTree}
+          filter={h.searchFilter}
           expandedClasses={h.expandedClasses}
-          classFilter={h.classFilter}
-          totalMethods={h.totalMethods}
+          expandedMethods={h.expandedMethods}
           onToggleClass={h.toggleClass}
-          onQuickQuery={h.quickQuery}
-          onFilterChange={h.setClassFilter}
+          onToggleMethod={h.toggleMethod}
+          getChain={h.getChain}
         />
-      )}
-
-      {activeTab === 'trace' && (
-        <QueryResult
-          result={h.result}
-          busy={h.busy}
-          onQuickQuery={h.quickQuery}
-          maxItems={h.isSidebar ? 100 : undefined}
-        />
-      )}
-
-      {/* ── 扫描完成但无操作时的引导 ── */}
-      {h.phase === 'complete' && h.showBrowser && !h.hasResult && (
-        <div className="done-banner">
-          ✓ 扫描完成。在<b>类树浏览</b>中点击类名展开方法，点击方法旁的 ↑↓ 追溯调用关系
-        </div>
-      )}
-
-      {/* ── 快速查询（无结果时显示） ── */}
-      {!h.showBrowser && !h.hasResult && (
-        <div className="quick-query-section">
-          <div className="section-label">快速查询</div>
-          <div className="query-row">
-            <select value={h.queryType} onChange={e => { h.setQueryType(e.target.value as any); }}>
-              <option value="callers">↑ 谁调了</option>
-              <option value="callees">↓ 调了谁</option>
-            </select>
-            <input type="text" value={h.query} placeholder="类名:方法" onChange={e => h.setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') h.doQuery() }} />
-            <button className="btn primary" disabled={!h.state.scanned || h.busy || !h.query.trim()} onClick={h.doQuery}>查</button>
-          </div>
-          <div className="quick-cmds">
-            {['Controller', 'Service', 'Mapper', 'Repository'].map(tag => (
-              <button key={tag} className="btn-tag" disabled={!h.state.scanned || h.busy} onClick={() => h.quickTagQuery(tag)}>{tag}</button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ── 编辑器模式：日志面板 ── */}
-      {!h.isSidebar && (
-        <div className="editor-section">
-          <div className="section-label">
-            分析日志
-            {h.logs.length > 0 && <span className="count">{h.logs.length} 条</span>}
-          </div>
-          <div className="log-panel">
-            {h.logs.length === 0
-              ? <div className="empty-log">暂无日志</div>
-              : h.logs.map((entry, i) => (
-                  <div key={i} className={`log-line log-${entry.level}`}>
-                    <span className="log-time">{entry.time}</span>
-                    <span className="log-text">{entry.text}</span>
-                  </div>
-                ))
-            }
-            <div ref={h.logEndRef} />
-          </div>
+      ) : !h.scanning && (
+        <div className="cg-empty">
+          {h.state.status === 'ready' ? '点击扫描开始分析' : '等待侧车就绪…'}
         </div>
       )}
     </div>

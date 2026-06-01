@@ -17,7 +17,7 @@ npm run watch          # tsup --watch（扩展端热更）
 npm run watch:webview  # vite build --watch（webview 端热更）
 
 # Java 侧车（调用图分析 — 修改后需手动构建）
-cd java-sidecar && mvn package -DskipTests
+cd java-sidecar && mvn package -DskipTests -q
 ```
 
 ### 构建架构
@@ -26,9 +26,10 @@ cd java-sidecar && mvn package -DskipTests
 - **Webview 端**：`src/webview/*` → Vite + React 19 → `dist-webview/`
   - 4 个独立入口：management / test / doc / result
   - 出口为自包含 HTML（`dist-webview/<name>/index.html`），asset 路径由扩展运行时自动转换
-- **Java 侧车**：`java-sidecar/**/*.java` → Maven → `java-sidecar/target/jacg-sidecar-0.1.2-jar-with-dependencies.jar`
+- **Java 侧车**：`java-sidecar/**/*.java` → Maven → `java-sidecar/target/jacg-sidecar-0.2.0.jar`
+  - Spring Boot 4.1.0-RC1 + Spring AI 2.0.0-M8 构建的 fat jar
   - 扩展激活时通过 `jacg-bridge.ts` 以子进程方式启动
-  - 提供 HTTP JSON-RPC（localhost:38766）供扩展查询调用图
+  - 暴露 MCP 标准协议（Streamable HTTP，端点 `POST /mcp`）供 MCP Client 直连
 - 面板通过 `panel.ts` 中 `resolveWebviewHtml()` 读取并注入 webview
 
 ### Webview 开发注意事项
@@ -39,17 +40,32 @@ cd java-sidecar && mvn package -DskipTests
 - 共享模块位于 `src/webview/shared/`：`hooks.ts`（useVscodeListener, postMessage）、`types.ts`、`vscode-api.ts`
 - CSS 目前合并输出，类名注意避免跨视图冲突
 
+### MCP 工具一览
+
+**TypeScript 侧（LSP 集成，通过 VS Code MCP Server 暴露）：**
+- `searchJavaTypes` — 搜索 Java 类型
+- `getSourceCodeByFQN` — 获取源码
+
+**Java 侧车（MCP 标准协议，直连 `http://127.0.0.1:38766/mcp`）：**
+- `scan_project` — 扫描字节码/JAR → H2 数据库
+- `query_callers` — 向上调用链
+- `query_callees` — 向下调用链
+- `list_methods` — 方法列表
+- `find_path` — 调用路径搜索
+- `query_status` — 数据库状态
+- `clean_cache` — 清理单项目
+- `clean_all` — 清理全部
+
 ### java-all-call-graph 侧车
 
 - **用途**：字节码级方法调用图分析（谁调了谁）
-- **依赖**：`java-all-call-graph:4.0.9` + `java-callgraph2:4.0.6` + BCEL 6.12.0 + H2 + Gson
+- **技术栈**：Spring Boot 4.1.0-RC1 + Spring AI 2.0.0-M8 + JACG 4.1.0 + BCEL 6.12.0 + H2 + Gson
 - **Maven**：`D:\apache-maven-3.9.16\bin\mvn.cmd`
 - **源码**：Maven dependency-plugin 已配置自动下载 sources.jar
-- **数据库**：`~/.cc-mcp-lsp-java/jacg/jacg_db.h2.db`（H2 文件模式）
+- **数据库**：`~/.cc-mcp-lsp-java/jacg/<projectId>.mv.db`（H2 文件模式，项目隔离）
 - **阶段1**：解析 .class / JAR → 填充 H2。`skipWhenNotModified=false`（保证重扫完整）
-- **阶段2**：查询调用图，优先 JACG API（失败时 SQL 回退），桥接层转 JSON
-- **兼容性**：JACG 4.0.9 对 JDK 25 class 存在 NPE（`Cannot invoke getClass() because m is null`），侧车内置 SQL 直查回退绕过此缺陷
-- **MCP 工具**：`analyzeCallGraph { command: scan|callers|callees|list|status }`
+- **阶段2**：查询调用图，JACG API 查询，桥接层转 JSON
+- **传输协议**：MCP Streamable HTTP（`POST /mcp`），Accept 头需包含 `text/event-stream, application/json`
 
 ### 项目结构
 
@@ -58,11 +74,20 @@ cc-mcp-lsp-java/
 ├── src/
 │   ├── extension.ts         # 插件入口
 │   ├── server.ts            # MCP HTTP 服务器
-│   ├── tools.ts             # MCP 工具（含 analyzeCallGraph）
+│   ├── tools.ts             # MCP 工具（LSP 集成：searchJavaTypes, getSourceCodeByFQN）
 │   ├── panel.ts             # Webview 面板管理
-│   └── jacg-bridge.ts       # Java 侧车桥接（HTTP 客户端 + 进程管理）
+│   └── jacg-bridge.ts       # Java 侧车桥接（进程管理 + MCP 轻量封装）
 ├── src/webview/             # React 面板源码
-├── java-sidecar/            # Java 侧车（Maven 项目）
+├── java-sidecar/            # Java 侧车（Spring Boot Maven 项目）
+│   └── src/main/java/com/ccmcp/jacg/
+│       ├── JacgSidecarApplication.java
+│       ├── config/          # 配置属性
+│       ├── db/              # H2 文件管理
+│       ├── scanner/         # JACG 扫描封装
+│       ├── query/           # 调用链查询
+│       ├── model/           # VO 模型
+│       └── mcp/tool/        # 8 个 @McpTool
+├── openspec/                # OpenSpec 规范文档
 ├── docs/                    # 项目文档
 ├── dist/                    # 扩展构建产物
 └── dist-webview/            # Webview 构建产物

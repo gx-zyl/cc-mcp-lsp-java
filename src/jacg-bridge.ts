@@ -11,7 +11,7 @@ import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
 import * as vscode from 'vscode';
 
-const SIDECAR_JAR_REL = 'java-sidecar/target/jacg-sidecar-0.1.3-jar-with-dependencies.jar';
+const SIDECAR_JAR_REL = 'java-sidecar/target/jacg-sidecar-0.3.0.jar';
 const DEFAULT_PORT = 38766;
 const DEFAULT_DB_DIR = '.cc-mcp-lsp-java/jacg';
 
@@ -57,6 +57,21 @@ let _sidecarDetail: SidecarDetailedStatus = {
 
 let _restartCount = 0;
 const MAX_RESTARTS = 3;
+
+/* ───────── JACG 日志捕获 ───────── */
+
+let _stderrBuffer: string[] = [];
+let _onScanLog: ((line: string) => void) | null = null;
+
+/** 设置日志回调（panel.ts 调用） */
+export function setScanLogCallback(cb: ((line: string) => void) | null): void {
+  _onScanLog = cb;
+}
+
+/** 获取缓存的 JACG 日志（最近 200 行） */
+export function getScanLogs(): string[] {
+  return [..._stderrBuffer];
+}
 
 /**
  * 设置详细状态并同步 running 字段。
@@ -251,6 +266,17 @@ function _doSpawn(
     detached: false,
   });
 
+  // 捕获 stderr 日志（JACG 输出）到 ring buffer
+  _stderrBuffer = [];
+  sidecarProcess.stderr?.on('data', (chunk: Buffer) => {
+    const lines = chunk.toString().split('\n').filter(l => l.trim());
+    for (const line of lines) {
+      _stderrBuffer.push(line);
+      if (_stderrBuffer.length > 200) _stderrBuffer.shift();
+      _onScanLog?.(line);
+    }
+  });
+
   sidecarProcess.on('error', (err) => {
     log(`[jacg] Failed to start sidecar: ${err.message}`);
     sidecarProcess = null;
@@ -387,198 +413,209 @@ export function isSidecarRunning(): boolean {
   return _sidecarDetail.running;
 }
 
-/* ───────── HTTP 通信 ───────── */
-
-async function post(endpoint: string, body?: Record<string, unknown>): Promise<unknown> {
-  const url = `http://127.0.0.1:${sidecarPort}${endpoint}`;
-  const res = await fetch(url, {
-    method: body ? 'POST' : 'GET',
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Sidecar ${endpoint} error (${res.status}): ${text}`);
-  }
-  return res.json();
-}
-
 async function healthCheck(): Promise<boolean> {
   try {
-    const res = await fetch(`http://127.0.0.1:${sidecarPort}/health`);
+    const res = await fetch(`http://127.0.0.1:${sidecarPort}/actuator/health`);
     return res.ok;
   } catch {
     return false;
   }
 }
 
-/* ───────── 命令式 API ───────── */
-
-export interface CallGraphNode {
-  method: string;
-  related: string[];
+/**
+ * 获取 MCP 端点 URL，供 MCP Client 直连侧车 MCP Server。
+ */
+export function getMcpEndpointUrl(): string {
+  return `http://127.0.0.1:${sidecarPort}/mcp`;
 }
 
-export interface QueryFilter {
-  className?: string;
-  methodName?: string;
-}
+/* ───────── MCP 调用（简化版，无 session 管理） ───────── */
 
-/** 给每个请求加上 projectId 参数 */
-function withProject<T>(body: T): T & { projectId: string } {
-  const pid = getProjectId();
-  return { ...body, projectId: pid || 'default' };
-}
-
-/** 构造带过滤的查询 body */
-function queryBody(cmd: string, filter?: QueryFilter): Record<string, unknown> {
-  return withProject({ cmd, ...(filter?.className ? { className: filter.className } : {}), ...(filter?.methodName ? { methodName: filter.methodName } : {}) });
-}
-
-export interface ScanOptions {
-  maxJars?: number;
-  scanTimeout?: number;
-  threads?: number;
-}
+let _mcpInited = false;
 
 /**
- * 阶段 1：扫描项目字节码 → 填充数据库。
- * inputDirs 可传多个目录（编译输出 + 依赖 JAR 目录）。
- * 扫描期间侧车 stdout 会输出 JSON 进度行，此处捕获并转发。
+ * 调用 MCP 工具。首次调用时 initialize，后续复用。
  */
-export async function scan(inputDirs: string[], log: (msg: string) => void, options?: ScanOptions): Promise<boolean> {
-  const projectId = getProjectId();
-  log(`[jacg] Scanning ${inputDirs.length} dir(s) for project ${projectId || '(no workspace)'}`);
-
-  // 监听侧车 stdout 的 JSON 进度行（捕获局部引用防竞态）
-  const proc = sidecarProcess;
-  let progressListener: ((chunk: Buffer) => void) | undefined;
-  if (proc?.stdout) {
-    progressListener = (chunk: Buffer) => {
-      const text = chunk.toString();
-      for (const line of text.split('\n').filter(l => l.trim())) {
-        try {
-          const parsed = JSON.parse(line);
-          if (parsed.type === 'progress') {
-            log(`[jacg] ${parsed.phase}: ${parsed.message}`);
-          }
-        } catch {
-          // 非 JSON 行忽略
-        }
-      }
-    };
-    proc.stdout.on('data', progressListener);
+async function mcpCall(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  // 1. 首次调用时 initialize
+  if (!_mcpInited) {
+    await fetch(`http://127.0.0.1:${sidecarPort}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2024-11-05', capabilities: {} },
+      }),
+    });
+    _mcpInited = true;
   }
 
+  // 2. 调用工具
+  const res = await fetch(`http://127.0.0.1:${sidecarPort}/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: Date.now(), method: 'tools/call',
+      params: { name: toolName, arguments: args }
+    }),
+  });
+  if (!res.ok) throw new Error(`MCP call failed: ${res.status}`);
+  const data = await res.json();
+  if (data.result?.content?.[0]?.text) {
+    return JSON.parse(data.result.content[0].text);
+  }
+  return null;
+}
+
+/* ───────── VS Code 命令所需的轻量 HTTP 封装 ───────── */
+
+/**
+ * 扫描项目调用图 — 异步触发 + 轮询进度。
+ * 供 VS Code 命令 `cc-mcp-lsp-java.scanCallGraph` 和面板调用。
+ *
+ * 调用时可传入 onProgress 回调接收实时进度更新。
+ */
+export async function scan(
+  inputDirs: string[],
+  log: (msg: string) => void,
+  options?: { maxJars?: number; scanTimeout?: number; threads?: number; onProgress?: (msg: string) => void },
+): Promise<boolean> {
+  if (!isSidecarRunning()) return false;
+  const projectId = getProjectId() || 'default';
+  log(`[jacg] Scanning ${inputDirs.length} dir(s) for project ${projectId}`);
+
   try {
-    const body: Record<string, unknown> = { inputDirs };
-    if (options?.maxJars) body.maxJars = options.maxJars;
-    if (options?.scanTimeout) body.scanTimeout = options.scanTimeout;
-    if (options?.threads) body.threads = options.threads;
-    const result = await post('/scan', withProject(body)) as { ok?: boolean; error?: string; status?: string; fileCount?: number; elapsedMs?: number };
-    if (result.error) {
-      log(`[jacg] Scan error: ${result.error}`);
+    // 1. 通过 MCP 触发异步扫描
+    const args: Record<string, unknown> = { projectId, inputDirs };
+    if (options?.maxJars != null && options.maxJars > 0) args.maxJars = options.maxJars;
+    if (options?.scanTimeout != null) args.scanTimeout = options.scanTimeout;
+    if (options?.threads != null) args.threads = options.threads;
+    const result = await mcpCall('scan_project', args) as {
+      success?: boolean; execId?: string; fileCount?: number; error?: string
+    } | null;
+    if (!result?.success || !result?.execId) {
+      const errMsg = result?.error || '未知错误';
+      log(`[jacg] scan_project failed: ${errMsg}`);
+      options?.onProgress?.(`扫描启动失败: ${errMsg}`);
       return false;
     }
-    log('[jacg] Scan complete');
-    return true;
-  } finally {
-    if (progressListener && proc?.stdout) {
-      proc.stdout.removeListener('data', progressListener);
+
+    const execId = result.execId;
+    const totalFiles = result.fileCount || 0;
+    log(`[jacg] Scan triggered, execId=${execId}, files=${totalFiles}`);
+
+    // 2. 轮询 query_scan_status 直到完成
+    const pollInterval = 2000;
+    const maxDuration = (options?.scanTimeout ?? 600) * 1000;
+    const start = Date.now();
+
+    while (Date.now() - start < maxDuration) {
+      await sleep(pollInterval);
+      const status = await mcpCall('query_scan_status', { execId }) as {
+        status?: string; fileCount?: number; elapsedMs?: number; error?: string; currentFile?: string
+      } | null;
+      if (!status || !status.status) break;
+      const done = status.fileCount ?? 0;
+      const elapsed = status.elapsedMs ?? 0;
+      const remaining = totalFiles - done;
+      const eta = done > 0 && remaining > 0 && status.status === 'running'
+        ? `剩余约 ${Math.ceil((elapsed / done) * remaining / 1000)}秒`
+        : '';
+      const detail = status.currentFile ? ` | ${status.currentFile}` : '';
+      const msg = status.status === 'running'
+        ? `扫描中 ${done}/${totalFiles} 文件 ${(elapsed/1000).toFixed(0)}秒 ${eta}${detail}`.trim()
+        : `扫描${status.status === 'complete' ? '完成' : '结束'} ${done}/${totalFiles} 文件 ${(elapsed/1000).toFixed(0)}秒`.trim();
+      options?.onProgress?.(msg);
+      log(`[jacg] ${msg}`);
+      if (status.status === 'complete') return true;
+      if (status.status === 'failed' || status.status === 'timeout') {
+        log(`[jacg] Scan ended: ${status.status}${status.error ? ': ' + status.error : ''}`);
+        options?.onProgress?.(`扫描失败: ${status.status}`);
+        return false;
+      }
     }
+    log(`[jacg] Scan timed out`);
+    options?.onProgress?.('扫描超时');
+    return false;
+  } catch (err) {
+    log(`[jacg] scan error: ${err}`);
+    options?.onProgress?.(`扫描异常: ${err}`);
+    return false;
   }
 }
 
-export async function getCallers(filter?: QueryFilter): Promise<CallGraphNode[]> {
-  const result = await post('/query', queryBody('callers', filter)) as { data?: { caller: string; callees: string[] }[] };
-  return ((result.data || []) as { caller: string; callees: string[] }[]).map((n) => ({
-    method: n.caller,
-    related: n.callees || [],
-  }));
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
-
-export async function getCallees(filter?: QueryFilter): Promise<CallGraphNode[]> {
-  const result = await post('/query', queryBody('callees', filter)) as { data?: { callee: string; callers: string[] }[] };
-  return ((result.data || []) as { callee: string; callers: string[] }[]).map((n) => ({
-    method: n.callee,
-    related: n.callers || [],
-  }));
-}
-
-export async function listMethods(filter?: QueryFilter): Promise<string[]> {
-  const result = await post('/query', queryBody('methodList', filter)) as { methods?: string[] };
-  return result.methods || [];
-}
-
-export async function findPath(keyword: string): Promise<string[]> {
-  const result = await post('/query', withProject({ cmd: 'findPath', keyword })) as { paths?: string[] };
-  return result.paths || [];
-}
-
-export async function getStatus(): Promise<{
-  scanned: boolean;
-  dbDir: string;
-  projectId: string;
-  inputDirs: string[];
-  dbFileSize: number;
-}> {
-  const result = await post('/status') as {
-    scanned: boolean;
-    baseDbDir: string;
-    projectId?: string;
-    inputDirs?: string[];
-  };
-  const pid = result.projectId || '';
-  // 从文件系统获取 H2 数据库文件大小
-  let dbFileSize = 0;
-  if (pid) {
-    try {
-      const dbFile = path.join(result.baseDbDir, `${pid}.mv.db`);
-      dbFileSize = fs.statSync(dbFile).size;
-    } catch { /* 文件还不存在 */ }
-  }
-  return {
-    scanned: result.scanned,
-    dbDir: result.baseDbDir,
-    projectId: pid,
-    inputDirs: result.inputDirs || [],
-    dbFileSize,
-  };
-}
-
-/* ───────── 缓存清理 ───────── */
 
 /**
- * 清理当前项目的 H2 数据库（删除整个 projectDbDir）。
+ * 清理当前项目缓存（通过侧车 MCP 端点）。
  */
 export async function cleanProjectCache(log: (msg: string) => void): Promise<boolean> {
-  const projectId = getProjectId();
-  log(`[jacg] Cleaning cache for project ${projectId || '(no workspace)'}`);
+  if (!isSidecarRunning()) return false;
+  const projectId = getProjectId() || 'default';
+  log(`[jacg] Cleaning cache for project ${projectId}`);
   try {
-    const result = await post('/clean', { projectId: projectId || 'default' }) as { ok?: boolean; freed?: string };
-    if (result.ok) {
-      log(`[jacg] Cleaned: ${result.freed}`);
-    }
-    return !!result.ok;
+    const parsed = await mcpCall('clean_cache', { projectId }) as { success?: boolean } | null;
+    return parsed?.success === true;
   } catch (err) {
-    log(`[jacg] Clean error: ${err}`);
+    log(`[jacg] clean error: ${err}`);
     return false;
   }
 }
 
-/**
- * 清理所有项目的缓存。
- */
-export async function cleanAllCache(log: (msg: string) => void): Promise<boolean> {
-  log('[jacg] Cleaning all project caches');
+/** 查询向上调用链 */
+export async function getCallers(filter?: { className?: string; methodName?: string }): Promise<{ method: string; related: string[] }[]> {
+  const projectId = getProjectId() || 'default';
+  const args: Record<string, unknown> = { projectId };
+  if (filter?.className) args.className = filter.className;
+  if (filter?.methodName) args.methodName = filter.methodName;
   try {
-    const result = await post('/clean-all', {}) as { ok?: boolean; freed?: string };
-    if (result.ok) {
-      log(`[jacg] All caches cleared: ${result.freed}`);
-    }
-    return !!result.ok;
-  } catch (err) {
-    log(`[jacg] Clean-all error: ${err}`);
-    return false;
+    const r = await mcpCall('query_callers', args) as { success?: boolean; nodes?: { method: string; related: string[] }[] };
+    return r?.nodes || [];
+  } catch { return []; }
+}
+
+/** 查询向下调用链 */
+export async function getCallees(filter?: { className?: string; methodName?: string }): Promise<{ method: string; related: string[] }[]> {
+  const projectId = getProjectId() || 'default';
+  const args: Record<string, unknown> = { projectId };
+  if (filter?.className) args.className = filter.className;
+  if (filter?.methodName) args.methodName = filter.methodName;
+  try {
+    const r = await mcpCall('query_callees', args) as { success?: boolean; nodes?: { method: string; related: string[] }[] };
+    return r?.nodes || [];
+  } catch { return []; }
+}
+
+/** 列出已分析方法 */
+export async function listMethods(filter?: { className?: string; methodName?: string }): Promise<string[]> {
+  const projectId = getProjectId() || 'default';
+  const args: Record<string, unknown> = { projectId };
+  if (filter?.className) args.className = filter.className;
+  if (filter?.methodName) args.methodName = filter.methodName;
+  try {
+    const r = await mcpCall('list_methods', args) as { success?: boolean; methods?: string[] };
+    return r?.methods || [];
+  } catch { return []; }
+}
+
+/**
+ * 查询调用图状态（通过侧车 MCP 端点）。
+ * @deprecated 建议直接用 MCP Client 连接侧车查询更完整的信息
+ */
+export async function getStatus(): Promise<{ scanned: boolean; dbDir: string; projectId: string; inputDirs: string[]; dbFileSize: number }> {
+  const projectId = getProjectId() || 'default';
+  try {
+    const parsed = await mcpCall('query_status', { projectId }) as { scanned?: boolean; dbDir?: string; projectId?: string; dbFileSize?: number } | null;
+    return {
+      scanned: parsed?.scanned || false,
+      dbDir: parsed?.dbDir || '',
+      projectId: parsed?.projectId || '',
+      inputDirs: [],
+      dbFileSize: parsed?.dbFileSize || 0,
+    };
+  } catch {
+    return { scanned: false, dbDir: '', projectId: '', inputDirs: [], dbFileSize: 0 };
   }
 }
