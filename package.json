@@ -3,7 +3,7 @@
   "displayName": "CC MCP LSP Java",
   "description": "MCP server for Java - connects to VS Code's existing JDT.LS via LSP API",
   "publisher": "gx-zyl",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/gx-zyl/cc-mcp-lsp-java.git"
@@ -14,7 +14,7 @@
   "homepage": "https://github.com/gx-zyl/cc-mcp-lsp-java#readme",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.120.0"
+    "vscode": "^1.100.0"
   },
   "categories": [
     "Other",
@@ -38,10 +38,7 @@
     "onView:ccMcpLspJavaManagement",
     "onView:ccMcpLspJavaDoc",
     "onView:ccMcpLspJavaTest",
-    "onView:ccMcpLspJavaCallGraph",
-    "onView:ccMcpLspJavaCallGraphDoc",
-    "onCommand:cc-mcp-lsp-java.openManagement",
-    "onCommand:cc-mcp-lsp-java.openCallGraph"
+    "onCommand:cc-mcp-lsp-java.openManagement"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -70,16 +67,6 @@
           "type": "webview",
           "id": "ccMcpLspJavaTest",
           "name": "Java 查询测试"
-        },
-        {
-          "type": "webview",
-          "id": "ccMcpLspJavaCallGraph",
-          "name": "调用图分析"
-        },
-        {
-          "type": "webview",
-          "id": "ccMcpLspJavaCallGraphDoc",
-          "name": "调用图 MCP 接口说明"
         }
       ]
     },
@@ -87,14 +74,6 @@
       {
         "command": "cc-mcp-lsp-java.openManagement",
         "title": "CC MCP LSP Java: 打开管理面板"
-      },
-      {
-        "command": "cc-mcp-lsp-java.openCallGraph",
-        "title": "CC MCP LSP Java: 打开调用图分析"
-      },
-      {
-        "command": "cc-mcp-lsp-java.openCallGraphDoc",
-        "title": "CC MCP LSP Java: 打开调用图 MCP 接口说明"
       }
     ],
     "configuration": {
@@ -109,26 +88,6 @@
           "type": "boolean",
           "default": true,
           "description": "Enable or disable the MCP server."
-        },
-        "cc-mcp-lsp-java.maxJars": {
-          "type": "number",
-          "default": 0,
-          "description": "Limit JAR/class file count for scan (0=unlimited, max 5000). Recommended for projects with 1000+ files."
-        },
-        "cc-mcp-lsp-java.scanTimeout": {
-          "type": "number",
-          "default": 600,
-          "description": "Scan timeout in seconds (default 600, 0=unlimited). Increase for large projects."
-        },
-        "cc-mcp-lsp-java.threads": {
-          "type": "number",
-          "default": 2,
-          "description": "JACG parallel processing threads (1-16, default 2). Higher values use more CPU but may increase H2 write contention."
-        },
-        "cc-mcp-lsp-java.queryTimeout": {
-          "type": "number",
-          "default": 60,
-          "description": "Query timeout in seconds (default 60, 0=unlimited)."
         }
       }
     }
@@ -145,7 +104,7 @@
     "@types/node": "^25.9.1",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
-    "@types/vscode": "^1.120.0",
+    "@types/vscode": "1.100.0",
     "tsup": "^8.5.1",
     "typescript": "^6.0.3"
   },
