@@ -11,7 +11,6 @@
 import * as http from 'node:http';
 import * as vscode from 'vscode';
 import crypto from 'node:crypto';
-import * as os from 'node:os';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { registerTools } from './tools.js';
@@ -46,16 +45,6 @@ const connectionHistory = new Map<string, ConnectionRecord>();
 const restartHistory: string[] = [];
 
 function getHostIp(): string {
-  const ifaces = os.networkInterfaces();
-  for (const name of Object.keys(ifaces)) {
-    const iface = ifaces[name];
-    if (!iface) continue;
-    for (const info of iface) {
-      if (info.family === 'IPv4' && !info.internal) {
-        return info.address;
-      }
-    }
-  }
   return '127.0.0.1';
 }
 
